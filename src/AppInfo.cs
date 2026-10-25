@@ -15,7 +15,7 @@ namespace Paranoidal
         /// Launcher version. This is the only place where it is set: the window title, header, log, crash report,
         /// sync log, GitHub User-Agent, assembly/file version and the exe manifest (build.ps1) take it from here.
         /// Every change of the launcher bumps it and gets a section in CHANGELOG.md; build.ps1 refuses to build
-        /// a different exe under an already built version (README.md, "Versions").
+        /// a different exe under an already built version (README.md, «Версии»).
         /// </summary>
         public const string Version = "1.1.0";
         public const string AssemblyVersion = Version + ".0";

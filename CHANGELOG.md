@@ -1,6 +1,6 @@
 # Paranoidal Launcher — изменения
 
-Новые версии сверху. Версия задаётся только в `src/AppInfo.cs` (`AppInfo.Version`); правило — в `README.md`, раздел «Versions».
+Новые версии сверху. Версия задаётся только в `src/AppInfo.cs` (`AppInfo.Version`); правило — в `README.md`, раздел «Версии».
 
 ## 1.1.0 — 2026-10-22
 

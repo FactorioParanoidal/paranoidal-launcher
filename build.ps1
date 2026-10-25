@@ -1,7 +1,7 @@
 # Builds dist\ParanoidalLauncher.exe (.NET Framework 4.8 WinForms, MinGit embedded).
 # Needs: Roslyn csc (Visual Studio / Build Tools) and .NET Framework 4.8 reference assemblies.
 #
-# Versions (README.md): the version is set only in src\AppInfo.cs (AppInfo.Version). This script puts it into the
+# Versions (README.md, section on versions): the version is set only in src\AppInfo.cs (AppInfo.Version). This script puts it into the
 # exe manifest, requires CHANGELOG.md to start with its section and refuses to build a different exe under a version
 # that is already built (dist\build-info.txt). -SameVersion allows that while the version was not given to anyone yet.
 param([string]$Out = "", [switch]$SameVersion)

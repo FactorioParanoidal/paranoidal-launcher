@@ -1,9 +1,9 @@
 # Paranoidal Launcher — instructions for agents
 
 Read this file in full before you change anything, then the sections of `README.md` that cover the code you touch.
-`README.md` is the technical contract of every feature; this file adds the working rules, the decisions behind the
+`README.md` (Russian, kept short) is the contract of every feature; this file adds the working rules, the decisions behind the
 design and the plans. Reply to the user in the language they write in (the team speaks Russian). Code, comments and
-these documents are in English; texts players see are RU/EN; `CHANGELOG.md` is Russian.
+these documents are in English; texts players see are RU/EN; `README.md` and `CHANGELOG.md` are Russian.
 
 ## 1. What it is
 
@@ -44,7 +44,7 @@ these documents are in English; texts players see are RU/EN; `CHANGELOG.md` is R
 
 ## 3. Versions, build, release
 
-- The rule is in `README.md` → «Versions» and is enforced by `build.ps1`: **every change that produces a different exe
+- The rule is in `README.md` → «Версии» and is enforced by `build.ps1`: **every change that produces a different exe
   raises `AppInfo.Version`** (its only place) and adds a Russian section at the top of `CHANGELOG.md`
   (`## x.y.z — YYYY-MM-DD`). Patch for fixes and small features, minor for larger ones. Comments and documents do
   not change the exe and need no version.
@@ -63,8 +63,8 @@ Each one was chosen after a real problem; the reasons are what you need when a "
 1. **Git, not per-file HTTP.** The first version downloaded files one by one from `raw.githubusercontent.com`. With
    thousands of files it hit GitHub limits (429), and a broken run left `mods\` half old, half new. Git transfers a
    compressed pack and only switches files at the end. The launcher keeps a partial shallow clone with sparse checkout
-   of `/mods/` (no second 1.2 GB copy in `.git`, only the difference is downloaded). Details: README «How the mods
-   folder is kept».
+   of `/mods/` (no second 1.2 GB copy in `.git`, only the difference is downloaded). Details: README «Как хранится
+   папка модов».
 2. **Download in parallel batches with a watchdog** (`Sync.cs`, ~24 MB per request): an early version shrank the batch
    after a failure and never grew it back, so the speed decayed over time. A stalled or sharply slowed request is
    killed and asked again; finished requests stay on disk, so a cancelled update continues.
