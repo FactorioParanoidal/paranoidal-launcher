@@ -19,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-vendor/MinGit-*.zip is MinGit from Git for Windows, distributed under the GNU
-General Public License version 2 (see vendor/MinGit-LICENSE.txt and
-vendor/README.md). The MIT licence above does not apply to it.
