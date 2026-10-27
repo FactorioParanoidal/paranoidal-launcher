@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace Paranoidal
@@ -77,11 +79,11 @@ namespace Paranoidal
         }
 
         /// <summary>OK / Cancel buttons at the bottom; returns the OK button.</summary>
-        static FButton Buttons(Frame fr, string okText)
+        static FButton Buttons(Frame fr, string okText, string cancelText = null)
         {
             Func<float, int> S = Theme.S;
             int bh = S(38), x = fr.Width - fr.Pad;
-            var cancelText = Tr.T("Отмена", "Cancel");
+            cancelText = cancelText ?? Tr.T("Отмена", "Cancel");
             int w = Math.Max(S(120), TextRenderer.MeasureText(cancelText, new Font("Segoe UI Semibold", 9.75f)).Width + S(30));
             x -= w;
             var no = new FButton(cancelText, ButtonKind.Normal) { Bounds = new Rectangle(x, fr.Y, w, bh) };
@@ -160,6 +162,114 @@ namespace Paranoidal
                     }
                 }
                 result = inp;
+                fr.F.DialogResult = DialogResult.OK;
+                fr.F.Close();
+            };
+            Show(fr.F, owner);
+            fr.F.Dispose();
+            return result;
+        }
+
+        /// <summary>
+        /// A newer launcher is released: every version between the installed and the latest with its changes, a
+        /// recommendation to update; asked on every start until updated (no "never" option, by the owner's decision).
+        /// True: update now.
+        /// </summary>
+        public static bool AskSelfUpdate(IWin32Window owner, ReleaseInfo r, bool needsAdmin)
+        {
+            Func<float, int> S = Theme.S;
+            var since = r.Since(AppInfo.Version);
+            var versions = string.Join(", ", since.Select(c => c.Version).Reverse());
+            var fr = Open(Tr.T("Обновление лаунчера", "Launcher update"),
+                Tr.T("Вышла новая версия лаунчера: ", "A new launcher version is out: ") + r.Version,
+                Tr.T("У вас версия ", "You have version ") + AppInfo.Version + ". " +
+                (since.Count > 1 ? Tr.T("Новые версии: ", "New versions: ") + versions + ". " : "") +
+                Tr.T("Рекомендуем обновиться: исправления и новые возможности приходят только с новой версией. " +
+                     "Лаунчер скачает её (", "We recommend updating: fixes and new features come only with the new version. " +
+                     "The launcher downloads it (") + Fmt.Size(r.Size) +
+                Tr.T("), проверит и перезапустится. Настройки, моды и сейвы не меняются.",
+                     "), checks it and restarts. Settings, mods and saves are not changed.") +
+                (needsAdmin ? Tr.T("\n\nПапка лаунчера защищена Windows (например, Program Files): Windows попросит права администратора. " +
+                                   "Чтобы этот вопрос больше не появлялся, перенесите папку игры вместе с лаунчером в обычную папку, например C:\\Games.",
+                                   "\n\nThe launcher's folder is protected by Windows (e.g. Program Files): Windows asks for administrator rights. " +
+                                   "To stop this question, move the game folder with the launcher to a normal folder, e.g. C:\\Games.") : ""), 680);
+            var box = new RichTextBox
+            {
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None,
+                BackColor = Theme.Inset,
+                ForeColor = Theme.Text,
+                Font = new Font("Segoe UI", 9.25f),
+                WordWrap = true,
+                DetectUrls = false,
+                Bounds = new Rectangle(fr.Pad, fr.Y, fr.Width - 2 * fr.Pad, S(260)),
+            };
+            Native.DarkScrollbars(box);
+            var bold = new Font("Segoe UI Semibold", 10.5f);
+            foreach (var c in since)
+            {
+                box.SelectionFont = bold;
+                box.SelectionColor = Theme.Title;
+                box.AppendText(AppInfo.Name + " " + c.Version + (c.Date.Length > 0 ? "  ·  " + c.Date : "") + "\n");
+                box.SelectionFont = box.Font;
+                box.SelectionColor = Theme.Text;
+                box.AppendText(PlainMarkdown(c.Text) + "\n\n");
+            }
+            if (since.Count == 0) box.AppendText(Tr.T("Список изменений недоступен.", "The list of changes is not available."));
+            box.SelectionStart = 0;
+            fr.F.Controls.Add(box);
+            fr.Y += S(260) + S(12);
+            var ok = Buttons(fr, Tr.T("Обновить сейчас", "Update now"), Tr.T("Позже", "Later"));
+            bool result = false;
+            ok.Click += (s, e) => { result = true; fr.F.DialogResult = DialogResult.OK; fr.F.Close(); };
+            Show(fr.F, owner);
+            fr.F.Dispose();
+            return result;
+        }
+
+        /// <summary>CHANGELOG markdown as plain text: bullets, no ** and backticks.</summary>
+        public static string PlainMarkdown(string md)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var raw in (md ?? "").Replace("\r\n", "\n").Split('\n'))
+            {
+                var line = raw.Replace("**", "").Replace("`", "");
+                var t = line.TrimStart();
+                if (t.StartsWith("- ")) { if (sb.Length > 0) sb.Append('\n'); sb.Append("• ").Append(t.Substring(2)); }
+                else if (t.Length > 0) sb.Append(sb.Length > 0 ? " " : "").Append(t);   // wrapped continuation of a bullet
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Several suitable game installations: which one is the player's (the launcher moves itself there and uses it).
+        /// Null: not now.
+        /// </summary>
+        public static FactorioInfo ChooseInstall(IWin32Window owner, List<FactorioInfo> list)
+        {
+            Func<float, int> S = Theme.S;
+            var fr = Open(Tr.T("Папка игры", "Game folder"), Tr.T("Найдено несколько подходящих установок ", "Several suitable installations of ") + AppInfo.RequiredGame,
+                Tr.T("Лаунчер работает правильно, только когда лежит в папке игры, в которую вы играете со сборкой. " +
+                     "Выберите её — лаунчер перенесёт себя туда, оставит ярлык на рабочем столе и запустится оттуда.",
+                     "The launcher works properly only from the folder of the game you play the modpack with. " +
+                     "Choose it: the launcher moves itself there, leaves a desktop shortcut and starts from there."), 640);
+            var radios = new List<RadioButton>();
+            foreach (var f in list)
+            {
+                var rb = Styled(new RadioButton { Text = f.Dir, Checked = radios.Count == 0 });
+                rb.Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, S(26));
+                fr.F.Controls.Add(rb);
+                radios.Add(rb);
+                fr.Y += S(27);
+            }
+            fr.Y += S(8);
+            var ok = Buttons(fr, Tr.T("Перенести сюда", "Move here"), Tr.T("Не сейчас", "Not now"));
+            FactorioInfo result = null;
+            ok.Click += (s, e) =>
+            {
+                int i = radios.FindIndex(r => r.Checked);
+                if (i < 0) return;
+                result = list[i];
                 fr.F.DialogResult = DialogResult.OK;
                 fr.F.Close();
             };

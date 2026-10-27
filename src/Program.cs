@@ -18,8 +18,14 @@ namespace Paranoidal
     static class Program
     {
         [STAThread]
-        static void Main()
+        static int Main(string[] args)
         {
+            StartArgs.Parse(args);
+            // helper mode (started elevated by SelfUpdate.InstallElevated): only the file swap, no window, no mutex
+            if (StartArgs.InstallSrc != null && StartArgs.InstallDir != null)
+                return SelfUpdate.HelperInstall(StartArgs.InstallSrc, StartArgs.InstallDir);
+            // a restart after an update or a move: the previous process still holds the mutex for a moment
+            StartArgs.WaitForPrevious();
             bool created;
             using (var mutex = new Mutex(true, @"Local\ParanoidalLauncher", out created))
             {
@@ -27,7 +33,7 @@ namespace Paranoidal
                 if (!created)
                 {
                     MessageBox.Show(AppInfo.Name + Tr.T(" уже запущен.", " is already running."), AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
+                    return 0;
                 }
                 Settings.MigratePaths();
                 ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
@@ -37,6 +43,7 @@ namespace Paranoidal
                 AppDomain.CurrentDomain.UnhandledException += (s, e) => Crash(e.ExceptionObject as Exception);
                 Application.Run(new MainForm());
             }
+            return 0;
         }
 
         static void Crash(Exception ex)

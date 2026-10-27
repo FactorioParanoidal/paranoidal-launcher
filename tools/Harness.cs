@@ -11,6 +11,15 @@
 //   Harness.exe --loaddiag-selftest <load-logs-2.0.77.zip>    checks the verdicts on the reference logs
 //   Harness.exe --report <factorioDir> <modsDir> <out.zip> [--save=last|auto|<path>]
 //   Harness.exe --parse-host <line>
+//   Harness.exe --releases                      release.json of the launcher and the guide (both at once, as the window does)
+//   Harness.exe --guide                         download the latest guide next to Harness.exe (GuideFile.Install) and print it
+//   Harness.exe --download-launcher <out.exe>   download the latest launcher release, check SHA-256, print its version
+//   Harness.exe --swap <new.exe> <exe>          self-update file swap: exe -> exe.old, new -> exe
+//   Harness.exe --relocate <srcExe> <dataDir> <gameDir>   copy the launcher into a game folder (Relocation.MoveTo)
+//   Harness.exe --cleanup-old <oldExe> <currentExe> <currentDataDir>   what the moved copy removes (--moved-from)
+//   Harness.exe --shortcuts <exe> [guide]       desktop + Start menu shortcuts (set PARANOIDAL_LAUNCHER_TEST_SHORTCUTS!)
+//   Harness.exe --detect-all [near]             every Factorio installation found
+// PARANOIDAL_LAUNCHER_TEST_GITHUB=http://127.0.0.1:<port> replaces https://github.com for the release downloads.
 // PARANOIDAL_LAUNCHER_TEST_OFFLINE=1 makes git and the GitHub API fail as without a connection;
 // PARANOIDAL_LAUNCHER_DATA_DIR moves settings and logs.
 using System;
@@ -71,6 +80,7 @@ namespace Paranoidal
             if (argv.Length > 0 && argv[0] == "--loaddiag-selftest") return LoadDiagSelfTest(argv[1]);
             if (argv.Length > 0 && argv[0] == "--report") return ReportTest(argv);
             if (argv.Length > 0 && argv[0] == "--parse-host") { Console.WriteLine("HOST " + (VersionLine.ParseHost(argv[1]) ?? "(none)")); return 0; }
+            if (argv.Length > 0 && argv[0].StartsWith("--") && ReleaseCommands(argv, out int rc)) return rc;
             if (argv.Length > 0 && argv[0] == "--paths")
             {
                 // settings.ini paths: relative inside the exe folder, absolute outside, 1.0.x absolute values migrated
@@ -129,6 +139,85 @@ namespace Paranoidal
             }
             catch (OperationCanceledException) { Console.WriteLine("CANCELLED after " + (int)(DateTime.Now - t0).TotalSeconds + "s"); return 2; }
             catch (Exception ex) { Console.WriteLine("ERROR " + ex.Message); return 1; }
+        }
+
+        // ------------------------------------------------------------------ releases, guide, self-update, relocation
+
+        static void PrintRelease(string what, ReleaseInfo r, string err)
+        {
+            if (r == null) { Console.WriteLine(what + " ERROR " + err); return; }
+            Console.WriteLine(what + " version=" + r.Version + " date=" + r.Date + " file=" + r.File + " size=" + r.Size + " sha=" + r.Sha256.Substring(0, 12) +
+                " changes=" + r.Changes.Count + " newer-than-mine=" + string.Join(",", r.Since(AppInfo.Version).Select(c => c.Version)) + " url=" + r.FileUrl);
+        }
+
+        static bool ReleaseCommands(string[] a, out int code)
+        {
+            code = 0;
+            try
+            {
+                switch (a[0])
+                {
+                    case "--releases":
+                        {
+                            var t0 = DateTime.Now;
+                            var rc = Releases.CheckAll();
+                            PrintRelease("LAUNCHER", rc.Launcher, rc.LauncherError);
+                            PrintRelease("GUIDE", rc.Guide, rc.GuideError);
+                            Console.WriteLine("TIME " + (int)(DateTime.Now - t0).TotalMilliseconds + "ms");
+                            return true;
+                        }
+                    case "--guide":
+                        {
+                            var r = Releases.Latest(AppInfo.GuideRepo, "guide", AppInfo.GuideFile);
+                            var local = GuideFile.Local();
+                            var lv = local == null ? null : GuideFile.Version(local);
+                            Console.WriteLine("LOCAL " + (local ?? "(none)") + " version=" + lv + " needsUpdate=" + GuideFile.NeedsUpdate(r, lv));
+                            if (GuideFile.NeedsUpdate(r, lv))
+                            {
+                                long last = -1;
+                                var path = GuideFile.Install(r, (d, t) => { long pct = t > 0 ? d * 100 / t : -1; if (pct / 25 != last / 25) { last = pct; Console.WriteLine("   " + pct + "%"); } });
+                                Console.WriteLine("INSTALLED " + path + " version=" + GuideFile.Version(path));
+                            }
+                            Console.WriteLine("LOCAL-AFTER " + GuideFile.Local() + " version=" + GuideFile.Version(GuideFile.Local()));
+                            return true;
+                        }
+                    case "--download-launcher":
+                        {
+                            var r = Releases.Latest(AppInfo.LauncherRepo, "launcher", AppInfo.ExeName);
+                            PrintRelease("LAUNCHER", r, null);
+                            Releases.Download(r, a[1], null);
+                            Console.WriteLine("DOWNLOADED " + a[1] + " exe-version=" + SelfUpdate.ExeVersion(a[1]));
+                            return true;
+                        }
+                    case "--swap":
+                        SelfUpdate.Swap(a[1], a[2]);
+                        Console.WriteLine("SWAPPED exe-version=" + SelfUpdate.ExeVersion(a[2]) + " old=" + File.Exists(a[2] + SelfUpdate.OldSuffix));
+                        SelfUpdate.CleanupOld(a[2]);
+                        Console.WriteLine("CLEANUP old-left=" + File.Exists(a[2] + SelfUpdate.OldSuffix));
+                        return true;
+                    case "--relocate":
+                        {
+                            var log = new List<string>();
+                            var exe = Relocation.MoveTo(a[1], a[2], a[3], log);
+                            foreach (var l in log) Console.WriteLine("   " + l);
+                            Console.WriteLine("MOVED start=" + exe + " version=" + SelfUpdate.ExeVersion(exe));
+                            return true;
+                        }
+                    case "--cleanup-old":
+                        foreach (var f in Relocation.CleanupOldPlace(a[1], a[2], a[3])) Console.WriteLine("REMOVED " + f);
+                        Console.WriteLine("CLEANUP done");
+                        return true;
+                    case "--shortcuts":
+                        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_SHORTCUTS"))) { Console.WriteLine("set PARANOIDAL_LAUNCHER_TEST_SHORTCUTS"); code = 1; return true; }
+                        foreach (var l in Shortcuts.All(a[1], a.Length > 2 ? a[2] : null)) Console.WriteLine("LINK " + l + " -> " + Shortcuts.TargetOf(l));
+                        return true;
+                    case "--detect-all":
+                        foreach (var f in FactorioInfo.DetectAll(a.Length > 1 ? a[1] : null)) Console.WriteLine("FACTORIO " + f.Dir + " | " + f.Describe(false) + " ok=" + f.Ok);
+                        return true;
+                }
+            }
+            catch (Exception ex) { Console.WriteLine("ERROR " + ex.Message); code = 1; return true; }
+            return false;
         }
 
         // ------------------------------------------------------------------ load diagnostics

@@ -101,6 +101,26 @@ namespace Paranoidal
         /// <summary>Finds an installed Factorio; prefers the required version.</summary>
         public static FactorioInfo Detect(string near)
         {
+            FactorioInfo first = null;
+            foreach (var fi in Candidates(near))
+            {
+                if (fi.Ok) return fi;
+                if (first == null) first = fi;
+            }
+            return first;
+        }
+
+        /// <summary>Every installation found (near first, then Steam, GOG, typical folders), each folder once.</summary>
+        public static List<FactorioInfo> DetectAll(string near)
+        {
+            var res = new List<FactorioInfo>();
+            foreach (var fi in Candidates(near))
+                if (!res.Any(x => x.Dir.Equals(fi.Dir, StringComparison.OrdinalIgnoreCase))) res.Add(fi);
+            return res;
+        }
+
+        static IEnumerable<FactorioInfo> Candidates(string near)
+        {
             var c = new List<string>();
             if (near != null) c.Add(near);
             try
@@ -147,15 +167,11 @@ namespace Paranoidal
                 catch { }
             }
 
-            FactorioInfo first = null;
             foreach (var path in c.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 var fi = Inspect(path);
-                if (fi == null) continue;
-                if (fi.Ok) return fi;
-                if (first == null) first = fi;
+                if (fi != null) yield return fi;
             }
-            return first;
         }
 
         public static bool IsRunning() => Process.GetProcessesByName("factorio").Length > 0;

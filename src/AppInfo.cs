@@ -17,7 +17,7 @@ namespace Paranoidal
         /// Every change of the launcher bumps it and gets a section in CHANGELOG.md; build.ps1 refuses to build
         /// a different exe under an already built version (README.md, «Версии»).
         /// </summary>
-        public const string Version = "1.1.0";
+        public const string Version = "1.2.0";
         public const string AssemblyVersion = Version + ".0";
         public const string Owner = "FactorioParanoidal";
         public const string RepoName = "ParanoidalModpack";
@@ -27,6 +27,17 @@ namespace Paranoidal
         /// <summary>The game the build needs, worded the same everywhere it is shown to the player.</summary>
         public const string RequiredGame = "Factorio " + RequiredFactorio + " Space Age";
         public const string MinGitVersion = "2.56.0.2-64";
+
+        // ---- where the launcher looks for its own updates and the guide (README «Где лаунчер ищет обновления»).
+        // Both are GitHub Releases of FactorioParanoidal repositories; each release carries release.json (Releases.cs).
+        /// <summary>This launcher's repository: Release vX.Y.Z = ParanoidalLauncher.exe + release.json (publish.ps1).</summary>
+        public const string LauncherRepo = "paranoidal-launcher";
+        /// <summary>The launcher's file name in the game folder (relocation and self-update keep this name).</summary>
+        public const string ExeName = "ParanoidalLauncher.exe";
+        /// <summary>The illustrated guide: Release vX.Y.Z = Guide_to_the_Paranoidal.html + release.json (built by its CI).</summary>
+        public const string GuideRepo = "guide-to-the-paranoidal";
+        /// <summary>The one-file guide, kept next to the exe (in the game folder); its version is in &lt;meta name="guide-version"&gt;.</summary>
+        public const string GuideFile = "Guide_to_the_Paranoidal.html";
 
         /// <summary>Tests only: PARANOIDAL_LAUNCHER_TEST_OFFLINE=1 makes git and the GitHub API fail as without a connection.</summary>
         public static readonly bool TestOffline = Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_OFFLINE") == "1";
@@ -81,7 +92,11 @@ namespace Paranoidal
             return legacy;
         }
 
-        static bool CanWrite(string dir)
+        static bool? exeDirWritable;
+        /// <summary>The exe folder accepts new files (false e.g. in Program Files without administrator rights).</summary>
+        public static bool ExeDirWritable => exeDirWritable ?? (exeDirWritable = CanWrite(ExeDir)).Value;
+
+        public static bool CanWrite(string dir)
         {
             try
             {

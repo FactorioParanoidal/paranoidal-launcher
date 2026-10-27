@@ -17,7 +17,7 @@ namespace Paranoidal
         readonly Card cardGame = new Card("");
         readonly Label lblInstalled, lblRemote, lblStatus, lblFacPath, lblFacVer, lblModsPath, lblModsNote, lblLoad, lblStage, lblDetail;
         readonly FButton btnPickFac, btnPickMods, btnOpenMods, btnUpdate, btnPlay, btnCopy, btnVerify, btnCheck, btnCancel;
-        readonly FButton btnLang, btnRollback, btnHost, btnReport;
+        readonly FButton btnLang, btnRollback, btnHost, btnReport, btnGuide, btnShortcuts;
         readonly ToolTip tips = new ToolTip { AutoPopDelay = 30000, InitialDelay = 400, ReshowDelay = 100 };
         readonly CheckBox chkCache, chkPin;
         readonly StripeProgress progress = new StripeProgress();
@@ -42,6 +42,19 @@ namespace Paranoidal
         bool shownCommitsNew, shownCommitsCached;
         List<ModChange> shownMods;
         LoadVerdict lastLoad;
+        // releases of the launcher and of the guide (checked together with the build, Releases.CheckAll)
+        ReleaseInfo launcherRel, guideRel;
+        string guideLocal, guideLocalVersion;
+        bool selfUpdatePending, restarting;
+
+        /// <summary>
+        /// Tests only: PARANOIDAL_LAUNCHER_TEST_AUTO=&lt;journal file&gt; runs the window far off-screen without activation,
+        /// answers "yes" to the self-update and the move questions (first installation), skips the administrator path,
+        /// appends the journal to that file on close and closes after the first status check.
+        /// </summary>
+        static readonly string TestAuto = Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_AUTO");
+        static bool Auto => !string.IsNullOrWhiteSpace(TestAuto);
+        protected override bool ShowWithoutActivation => Auto;
 
         public MainForm()
         {
@@ -54,7 +67,8 @@ namespace Paranoidal
             Font = new Font("Segoe UI", 9.75f);
             AutoScaleMode = AutoScaleMode.None;
             DoubleBuffered = true;
-            StartPosition = FormStartPosition.CenterScreen;
+            StartPosition = Auto ? FormStartPosition.Manual : FormStartPosition.CenterScreen;
+            if (Auto) Location = new Point(-32000, -32000);
             ClientSize = new Size(Theme.S(1000), Theme.S(800));
             MinimumSize = SizeFromClientSize(new Size(Theme.S(900), Theme.S(740)));
 
@@ -62,6 +76,8 @@ namespace Paranoidal
             Controls.Add(cardBuild);
             Controls.Add(cardGame);
             btnLang = B(header, "", ButtonKind.Normal, () => Tr.Set(!Tr.En));
+            btnGuide = B(header, "", ButtonKind.Normal, OpenGuide);
+            btnShortcuts = B(header, "", ButtonKind.Normal, MakeShortcuts);
 
             lblInstalled = L(cardBuild, Theme.Text);
             lblRemote = L(cardBuild, Theme.Text);
@@ -253,6 +269,14 @@ namespace Paranoidal
             header.Invalidate();
             btnLang.Text = Tr.T("Язык: RU", "Language: EN");
             tips.SetToolTip(btnLang, Tr.T("Switch to English", "Переключить на русский"));
+            btnGuide.Text = Tr.T("📖 Гайд", "📖 Guide");
+            btnShortcuts.Text = Tr.T("Ярлыки", "Shortcuts");
+            tips.SetToolTip(btnShortcuts, Tr.T(
+                "Создать ярлыки лаунчера на рабочем столе и в меню «Пуск» (папка Paranoidal, там же гайд по сборке).\n" +
+                "Сам лаунчер остаётся в папке игры: там он работает правильно.",
+                "Create launcher shortcuts on the desktop and in the Start menu (Paranoidal folder, with the modpack guide).\n" +
+                "The launcher itself stays in the game folder, where it works properly."));
+            ShowGuideState();
             btnPickFac.Text = Tr.T("Выбрать…", "Choose…");
             btnPickMods.Text = Tr.T("Выбрать…", "Choose…");
             btnOpenMods.Text = Tr.T("Открыть", "Open");
@@ -354,7 +378,11 @@ namespace Paranoidal
             int W = ClientSize.Width, H = ClientSize.Height, m = S(14);
             if (W < 10) return;
             header.Bounds = new Rectangle(0, 0, W, S(132));
-            btnLang.Bounds = new Rectangle(S(10), S(8), Math.Max(S(92), TextRenderer.MeasureText(btnLang.Text, btnLang.Font).Width + S(20)), S(26));
+            // left column of the header: language, guide, shortcuts (the logo is centred, ~150 px from the edge at the minimal width)
+            int hw = Math.Max(S(92), new[] { btnLang, btnGuide, btnShortcuts }.Max(b => TextRenderer.MeasureText(b.Text, b.Font).Width) + S(20));
+            btnLang.Bounds = new Rectangle(S(10), S(8), hw, S(26));
+            btnGuide.Bounds = new Rectangle(S(10), S(40), hw, S(26));
+            btnShortcuts.Bounds = new Rectangle(S(10), S(72), hw, S(26));
             int y = header.Bottom + m;
             int cw = (W - 3 * m) * 45 / 100, ch = S(218);
             cardBuild.Bounds = new Rectangle(m, y, cw, ch);
@@ -459,6 +487,11 @@ namespace Paranoidal
             }
             else if (remote == null)
                 Status(offline ? Tr.T("● Нет связи с GitHub", "● No connection to GitHub") : Tr.T("● Обновления не проверены", "● Updates not checked"), Theme.Muted);
+            else if (installed == remote && GuideUpdate && !Pinned)
+            {
+                Status(Tr.T("⬆ Доступно обновление гайда", "⬆ A guide update is available"), Theme.Orange);
+                statusTip = GuideUpdateText();
+            }
             else if (installed == remote)
                 Status(Tr.T("✔ Установлена последняя версия", "✔ The latest version is installed"), Theme.Green);
             else if (Pinned)
@@ -517,6 +550,8 @@ namespace Paranoidal
             btnRollback.Enabled = !busy && rollbackTarget != null && engine != null && modsOk;
             btnHost.Enabled = !busy && engine != null && modsDir != null;
             btnReport.Enabled = !busy;
+            btnGuide.Enabled = !busy;
+            btnShortcuts.Enabled = !busy;
             btnPickFac.Enabled = !busy;
             btnPickMods.Enabled = !busy;
             btnOpenMods.Enabled = modsOk;
@@ -661,7 +696,7 @@ namespace Paranoidal
             }));
         }
 
-        sealed class StartData { public GitRunner Git; public FactorioInfo Fac; public string Mods; }
+        sealed class StartData { public GitRunner Git; public FactorioInfo Fac; public string Mods; public bool FromSettings; public List<FactorioInfo> All; }
 
         void Startup()
         {
@@ -669,17 +704,55 @@ namespace Paranoidal
             AppendLog("Данные лаунчера: " + AppInfo.DataDir, LogKind.Muted);
             if (AppInfo.DataDirNote != null) AppendLog(AppInfo.DataDirNote, LogKind.Warn);
             if (AppInfo.TestOffline) AppendLog("Тестовый режим: связь с GitHub отключена (PARANOIDAL_LAUNCHER_TEST_OFFLINE=1).", LogKind.Warn);
+            if (Releases.Base != "https://github.com") AppendLog("Тестовый режим: релизы лаунчера и гайда берутся с " + Releases.Base + ".", LogKind.Warn);
+            var exePath = SelfUpdate.CurrentExe;
+            SelfUpdate.CleanupOld(exePath);
+            if (StartArgs.UpdatedFrom != null)
+            {
+                AppendLog("Лаунчер обновлён: " + StartArgs.UpdatedFrom + " → " + AppInfo.Version + ".", LogKind.Ok);
+                lblDetail.Text = Tr.T("Лаунчер обновлён до ", "The launcher is updated to ") + AppInfo.Version;
+            }
+            if (StartArgs.MovedFrom != null)
+            {
+                var removed = Relocation.CleanupOldPlace(StartArgs.MovedFrom, exePath, AppInfo.DataDir);
+                AppendLog("Лаунчер перенесён в папку игры: " + AppInfo.ExeDir + ". Со старого места удалено: " +
+                    (removed.Count == 0 ? "ничего" : string.Join(", ", removed)) + ". На рабочем столе — ярлык «" + Path.GetFileNameWithoutExtension(Shortcuts.LauncherLink) + "».", LogKind.Ok);
+                lblDetail.Text = Tr.T("Лаунчер перенесён в папку игры, на рабочем столе — ярлык для запуска", "The launcher moved into the game folder; a shortcut is on the desktop");
+            }
+            RefreshGuideLocal();
+            RunOp(() =>
+            {
+                Stage("Ищу Factorio…", "Looking for Factorio…");
+                Progress(null, "");
+                var sd = new StartData();
+                sd.Fac = FactorioInfo.Inspect(Settings.GetPath("factorio"));
+                sd.FromSettings = sd.Fac != null;
+                if (sd.Fac == null)
+                {
+                    sd.All = FactorioInfo.DetectAll(AppDomain.CurrentDomain.BaseDirectory);
+                    sd.Fac = sd.All.FirstOrDefault(x => x.Ok) ?? sd.All.FirstOrDefault();
+                }
+                return sd;
+            }, sd =>
+            {
+                fac = sd.Fac;
+                if (MaybeRelocate(sd.All, sd.FromSettings)) return;   // the copy in the game folder takes over
+                StartEngine();
+            });
+        }
+
+        /// <summary>Second part of the start: MinGit (unpacked only where the launcher stays), the engine, the status check.</summary>
+        void StartEngine()
+        {
+            var f0 = fac;
             RunOp(() =>
             {
                 var exe = GitBootstrap.Ensure(Stage);
                 var g = new GitRunner(exe, Path.Combine(AppInfo.DataDir, "no-global-config"));
-                Stage("Ищу Factorio…", "Looking for Factorio…");
-                Progress(null, "");
-                var f = FactorioInfo.Inspect(Settings.GetPath("factorio")) ?? FactorioInfo.Detect(AppDomain.CurrentDomain.BaseDirectory);
                 var mods = Settings.GetPath("mods");
                 // a game folder copied elsewhere: the old absolute path of the mods folder points nowhere
                 if (mods != null && !Directory.Exists(Path.GetDirectoryName(mods) ?? mods)) mods = null;
-                return new StartData { Git = g, Fac = f, Mods = mods };
+                return new StartData { Git = g, Fac = f0, Mods = mods };
             }, sd =>
             {
                 git = sd.Git;
@@ -716,6 +789,7 @@ namespace Paranoidal
                 else return Tr.T("Сборка не установлена — нажмите «Установить»", "The build is not installed: press \"Install\"");
             }
             else if (modified > 0) return Tr.T("Файлы сборки изменены — «Проверить файлы» вернёт их", "Build files were changed: \"Check files\" restores them");
+            else if (installed == remote && GuideUpdate && !Pinned) return GuideUpdateText() + Tr.T(" — нажмите «Обновить»", ": press \"Update\"");
             else if (installed == remote) return Tr.T("Установлена последняя версия", "The latest version is installed");
             else if (Pinned) return Tr.T("Версия закреплена — обновление не устанавливается", "The version is kept: the update is not installed");
             else return Tr.T("Доступно обновление сборки", "A build update is available") + (remoteDate != null ? Tr.T(" от ", " of ") + remoteDate : "");
@@ -725,9 +799,19 @@ namespace Paranoidal
         {
             if (engine == null) return;
             var mods = modsDir;
-            RunOp(() => engine.CheckStatus(mods), st =>
+            // the launcher's and the guide's releases are checked at the same time as the build
+            var releases = Task.Run(() => Releases.CheckAll());
+            RunOp(() =>
             {
+                var s = engine.CheckStatus(mods);
+                ReleaseCheck rc;
+                try { rc = releases.Result; } catch (Exception ex) { rc = new ReleaseCheck { LauncherError = ex.GetBaseException().Message, GuideError = ex.GetBaseException().Message }; }
+                return Tuple.Create(s, rc);
+            }, res =>
+            {
+                var st = res.Item1;
                 ApplyStatus(st, false);
+                ApplyReleases(res.Item2, st.Offline);
                 Idle(StatusIdleText());
                 progress.Value = installed != null && installed == remote ? 1 : 0;
                 if (adopted)
@@ -735,9 +819,310 @@ namespace Paranoidal
                 else
                     lblDetail.Text = st.CommitsAreNew && st.Commits != null
                         ? Tr.T("Новых изменений в сборке: ", "New changes in the build: ") + st.Commits.Count + Tr.T(" — смотрите вкладку «Что нового»", ": see the \"What's new\" tab")
-                        : "";
+                        : lblDetail.Text.StartsWith(Tr.T("Лаунчер ", "The launcher ")) ? lblDetail.Text : "";
+                OfferSelfUpdate();
+                if (Auto && !restarting && !busy && guideLocal == null && guideRel != null) OpenGuide();   // tests: the download path of «Гайд»
+                else if (Auto && !restarting && !busy) BeginInvoke(new Action(Close));
             });
         }
+
+        // ------------------------------------------------------------------ launcher and guide releases
+
+        void ApplyReleases(ReleaseCheck rc, bool offline)
+        {
+            var kind = offline ? LogKind.Muted : LogKind.Warn;
+            if (rc.Launcher != null) launcherRel = rc.Launcher;
+            else AppendLog("Не удалось проверить новую версию лаунчера: " + rc.LauncherError, kind);
+            if (rc.Guide != null) guideRel = rc.Guide;
+            else AppendLog("Не удалось проверить гайд по сборке: " + rc.GuideError, kind);
+            RefreshGuideLocal();
+            if (launcherRel != null && Releases.Compare(launcherRel.Version, AppInfo.Version) <= 0)
+                AppendLog("Лаунчер " + AppInfo.Version + " — последняя версия.", LogKind.Muted);
+            if (guideRel != null)
+                AppendLog(GuideUpdate ? "Вышла новая версия гайда по сборке: " + guideRel.Version + (guideLocalVersion != null ? " (у вас " + guideLocalVersion + ")" : " (гайд ещё не скачан)") +
+                    ". Он скачается вместе с обновлением сборки." : "Гайд по сборке " + guideLocalVersion + " — последняя версия.",
+                    GuideUpdate ? LogKind.Info : LogKind.Muted);
+        }
+
+        /// <summary>A newer guide is released (or none is downloaded yet): it is downloaded with the next build update.</summary>
+        bool GuideUpdate => GuideFile.NeedsUpdate(guideRel, guideLocalVersion);
+
+        string GuideUpdateText() => guideLocalVersion == null
+            ? Tr.T("Гайд по сборке ещё не скачан", "The modpack guide is not downloaded yet")
+            : Tr.T("Вышла новая версия гайда по сборке: ", "A new version of the modpack guide: ") + guideRel.Version;
+
+        void RefreshGuideLocal()
+        {
+            guideLocal = GuideFile.Local();
+            guideLocalVersion = guideLocal == null ? null : GuideFile.Version(guideLocal);
+            ShowGuideState();
+        }
+
+        void ShowGuideState()
+        {
+            if (btnGuide == null) return;
+            tips.SetToolTip(btnGuide, Tr.T(
+                "Иллюстрированный гайд по сборке для игроков ванильной Factorio. Один файл " + AppInfo.GuideFile + "\n" +
+                "рядом с лаунчером, открывается в браузере и работает без интернета. Новая версия скачивается вместе с обновлением сборки.\n",
+                "Illustrated modpack guide for vanilla Factorio players. One file " + AppInfo.GuideFile + "\n" +
+                "next to the launcher: opens in the browser and works offline. A new version is downloaded with the build update.\n") +
+                (guideLocal == null ? Tr.T("Гайд ещё не скачан: кнопка скачает его (нужен интернет).", "Not downloaded yet: the button downloads it (needs internet).")
+                    : Tr.T("Версия ", "Version ") + (guideLocalVersion ?? "?") + ": " + guideLocal));
+        }
+
+        /// <summary>Bold journal line with a book sign (the guide was updated).</summary>
+        void AppendLogHighlight(string text)
+        {
+            rtbLog.SelectionStart = rtbLog.TextLength;
+            rtbLog.SelectionLength = 0;
+            rtbLog.SelectionColor = Theme.Muted;
+            rtbLog.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  ");
+            var normal = rtbLog.SelectionFont;
+            rtbLog.SelectionFont = new Font("Segoe UI Symbol", 10.5f, FontStyle.Bold);
+            rtbLog.SelectionColor = Theme.Title;
+            rtbLog.AppendText("📖 ");
+            rtbLog.SelectionFont = new Font(rtbLog.Font, FontStyle.Bold);
+            rtbLog.AppendText(text + "\n");
+            rtbLog.SelectionFont = rtbLog.Font;
+            rtbLog.SelectionStart = rtbLog.TextLength;
+            rtbLog.ScrollToCaret();
+        }
+
+        /// <summary>«Гайд»: opens the local copy; downloads it first only when there is none.</summary>
+        void OpenGuide()
+        {
+            RefreshGuideLocal();
+            if (guideLocal != null)
+            {
+                try { GuideFile.Open(guideLocal); AppendLog("Открыт гайд по сборке " + (guideLocalVersion ?? "?") + ": " + guideLocal, LogKind.Muted); }
+                catch (Exception ex) { DarkDialog.Info(this, Tr.T("Гайд по сборке", "Modpack guide"), Tr.T("Не удалось открыть ", "Could not open ") + guideLocal + ":\n" + ex.Message, Theme.Red); }
+                return;
+            }
+            var known = guideRel;
+            RunOp(() =>
+            {
+                Stage("Скачиваю гайд по сборке…", "Downloading the modpack guide…");
+                Progress(null, "");
+                var r = known ?? Releases.Latest(AppInfo.GuideRepo, "guide", AppInfo.GuideFile);
+                return InstallGuide(r);
+            }, r =>
+            {
+                guideRel = r;
+                Idle(Tr.T("Гайд по сборке скачан ✔", "The modpack guide is downloaded ✔"));
+                lblDetail.Text = guideLocal;
+                AppendLogHighlight("Скачан гайд по сборке Paranoidal " + r.Version + ": " + guideLocal);
+                if (Auto) { BeginInvoke(new Action(Close)); return; }
+                try { GuideFile.Open(guideLocal); } catch { }
+            });
+        }
+
+        /// <summary>Worker thread: downloads the guide of the release with progress; returns it.</summary>
+        ReleaseInfo InstallGuide(ReleaseInfo r)
+        {
+            Releases.Cancel = false;
+            CanCancel(true);
+            try
+            {
+                GuideFile.Install(r, (d, t) => Progress(t > 0 ? d / (double)t : (double?)null, Fmt.Size(d) + " / " + Fmt.Size(t)));
+            }
+            catch (OperationCanceledException) { throw new SyncException("Скачивание гайда отменено.", "The guide download was cancelled."); }
+            catch (SyncException) { throw; }
+            catch (Exception ex) { throw new SyncException("Гайд не скачан: " + ex.Message, "The guide was not downloaded: " + ex.Message); }
+            Ui(RefreshGuideLocal);
+            return r;
+        }
+
+        void MakeShortcuts()
+        {
+            try
+            {
+                RefreshGuideLocal();
+                var made = Shortcuts.All(SelfUpdate.CurrentExe, guideLocal);
+                AppendLog("Созданы ярлыки: " + string.Join(", ", made), LogKind.Ok);
+                DarkDialog.Info(this, Tr.T("Ярлыки", "Shortcuts"), Tr.T("Ярлыки созданы: на рабочем столе и в меню «Пуск» (папка Paranoidal).", "Shortcuts created: on the desktop and in the Start menu (Paranoidal folder).") +
+                    (AppInfo.ExeDir == (fac != null ? fac.Dir : null) || fac == null ? "" : Tr.T("\n\nЛаунчер лежит не в папке игры: ярлыки ведут сюда, пока он не перенесён.", "\n\nThe launcher is not in the game folder: the shortcuts point here until it is moved.")),
+                    Theme.Green);
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Ярлыки не созданы: " + ex.Message, LogKind.Error);
+                DarkDialog.Info(this, Tr.T("Ярлыки", "Shortcuts"), Tr.T("Не удалось создать ярлыки: ", "Could not create the shortcuts: ") + ex.Message, Theme.Red);
+            }
+        }
+
+        // ------------------------------------------------------------------ self-update
+
+        /// <summary>A newer launcher: asked on every start (and every manual check) until updated; after the game exits if it runs.</summary>
+        void OfferSelfUpdate()
+        {
+            var r = launcherRel;
+            if (r == null || restarting || Releases.Compare(r.Version, AppInfo.Version) <= 0) return;
+            if (busy || gameRunning)
+            {
+                if (!selfUpdatePending) AppendLog("Вышла новая версия лаунчера " + r.Version + ": предложу обновиться после выхода из игры.", LogKind.Info);
+                selfUpdatePending = true;
+                return;
+            }
+            selfUpdatePending = false;
+            AppendLog("Вышла новая версия лаунчера: " + r.Version + " (установлена " + AppInfo.Version + ").", LogKind.Warn);
+            if (!Auto && !Dialogs.AskSelfUpdate(this, r, !AppInfo.ExeDirWritable))
+            {
+                AppendLog("Обновление лаунчера отложено: лаунчер спросит снова при следующем запуске.", LogKind.Muted);
+                return;
+            }
+            DoSelfUpdate(r);
+        }
+
+        void DoSelfUpdate(ReleaseInfo r)
+        {
+            var exe = SelfUpdate.CurrentExe;
+            bool direct = AppInfo.ExeDirWritable;
+            var file = direct ? exe + SelfUpdate.NewSuffix : Path.Combine(Path.GetTempPath(), "ParanoidalLauncher-" + r.Version + ".exe");
+            RunOp(() =>
+            {
+                Stage("Скачиваю лаунчер " + r.Version + "…", "Downloading launcher " + r.Version + "…");
+                Releases.Cancel = false;
+                CanCancel(true);
+                try { Releases.Download(r, file, (d, t) => Progress(t > 0 ? d / (double)t : (double?)null, Fmt.Size(d) + " / " + Fmt.Size(t))); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { throw new SyncException("Новая версия лаунчера не скачана: " + ex.Message, "The new launcher version was not downloaded: " + ex.Message); }
+                var v = SelfUpdate.ExeVersion(file);
+                if (v != r.Version)
+                {
+                    try { File.Delete(file); } catch { }
+                    throw new SyncException("Скачанный лаунчер имеет версию " + (v ?? "?") + ", ожидалась " + r.Version + ".",
+                        "The downloaded launcher has version " + (v ?? "?") + ", expected " + r.Version + ".");
+                }
+                return true;
+            }, _ =>
+            {
+                try
+                {
+                    if (direct) SelfUpdate.Swap(file, exe);
+                    else
+                    {
+                        string err;
+                        if (!SelfUpdate.InstallElevated(exe, file, AppInfo.ExeDir, out err))
+                        {
+                            AppendLog(err == null ? "Права администратора не выданы — лаунчер не обновлён." : "Лаунчер не обновлён: " + err, LogKind.Warn);
+                            Idle(Tr.T("Лаунчер не обновлён", "The launcher was not updated"));
+                            try { File.Delete(file); } catch { }
+                            return;
+                        }
+                        try { File.Delete(file); } catch { }
+                    }
+                    AppendLog("Лаунчер " + r.Version + " установлен, перезапускаюсь.", LogKind.Ok);
+                    SelfUpdate.Restart(exe, "--updated-from " + AppInfo.Version);
+                    restarting = true;
+                    BeginInvoke(new Action(Close));
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("Лаунчер не обновлён: " + ex, LogKind.Error);
+                    try { File.Delete(file); } catch { }
+                    DarkDialog.Info(this, Tr.T("Обновление лаунчера", "Launcher update"), Tr.T("Не удалось заменить лаунчер: ", "Could not replace the launcher: ") + ex.Message +
+                        Tr.T("\nСкачайте новую версию вручную: ", "\nDownload the new version by hand: ") + Releases.PageUrl(AppInfo.LauncherRepo), Theme.Red);
+                }
+            });
+        }
+
+        // ------------------------------------------------------------------ the launcher's place: the game folder
+
+        /// <summary>
+        /// The launcher works properly only from the game folder. When it is elsewhere and the game (2.0.77 Space Age) is
+        /// known, it moves itself there silently; if that fails it asks for administrator rights. True: the copy in the
+        /// game folder was started and this process closes.
+        /// </summary>
+        bool MaybeRelocate(List<FactorioInfo> all, bool fromSettings)
+        {
+            var why = Relocation.DisabledReason();
+            if (why != null) { AppendLog("Перенос лаунчера в папку игры выключен: " + why + ".", LogKind.Muted); return false; }
+            var target = fac;
+            if (!fromSettings && all != null)
+            {
+                var ok = all.Where(x => x.Ok).ToList();
+                if (ok.Any(x => Relocation.SameDir(x.Dir, AppInfo.ExeDir))) return false;
+                if (ok.Count > 1)
+                {
+                    AppendLog("Найдено несколько подходящих установок игры: " + string.Join("; ", ok.Select(x => x.Dir)), LogKind.Info);
+                    var chosen = Auto ? ok[0] : Dialogs.ChooseInstall(this, ok);
+                    if (chosen == null)
+                    {
+                        AppendLog("Перенос лаунчера отложен (установка не выбрана). Лаунчер спросит снова при следующем запуске.", LogKind.Warn);
+                        return false;
+                    }
+                    target = fac = chosen;
+                }
+            }
+            if (target == null || !target.Ok)
+            {
+                if (!Relocation.SameDir(AppInfo.ExeDir, target != null ? target.Dir : ""))
+                    AppendLog("Лаунчер лежит не в папке игры (" + AppInfo.ExeDir + "): он перенесёт себя туда, когда будет выбрана " + AppInfo.RequiredGame + ".", LogKind.Warn);
+                return false;
+            }
+            if (Relocation.SameDir(target.Dir, AppInfo.ExeDir)) return false;
+            return RelocateTo(target);
+        }
+
+        bool RelocateTo(FactorioInfo target)
+        {
+            var exe = SelfUpdate.CurrentExe;
+            var log = new List<string>();
+            AppendLog("Лаунчер лежит не в папке игры (" + AppInfo.ExeDir + "). Переношу его в " + target.Dir + ".", LogKind.Info);
+            string newExe = null, error = null;
+            if (AppInfo.CanWrite(target.Dir))
+            {
+                try { newExe = Relocation.MoveTo(exe, AppInfo.DataDir, target.Dir, log); }
+                catch (Exception ex) { error = ex.Message; }
+            }
+            else error = "в папку игры нельзя записывать без прав администратора";
+            foreach (var l in log) AppendLog("Перенос: " + l + ".", LogKind.Muted);
+            if (newExe == null)
+            {
+                AppendLog("Перенести лаунчер автоматически не удалось: " + error + ".", LogKind.Warn);
+                var r = Auto ? DialogResult.No : DarkDialog.Ask(this, Tr.T("Папка игры", "Game folder"),
+                    Tr.T("Лаунчер нужно перенести в папку игры", "The launcher must be moved into the game folder"),
+                    Tr.T("Правильная работа лаунчера гарантируется, только когда он лежит в папке игры, с которой вы играете:\n",
+                         "The launcher is guaranteed to work properly only from the folder of the game you play:\n") + target.Dir + "\n\n" +
+                    Tr.T("Сам он туда перенестись не смог (", "It could not move itself there (") + (Tr.En ? EnError(error) : error) +
+                    Tr.T("). По кнопке «Перенести» Windows попросит права администратора; лаунчер скопирует себя в папку игры, оставит ярлык на рабочем столе и запустится оттуда.\n\n" +
+                         "Совет: если игра стоит в Program Files, перенесите всю её папку в обычную папку, например C:\\Games\\Factorio. " +
+                         "Тогда права администратора не понадобятся ни для переноса, ни для обновлений, и это сообщение больше не появится.",
+                         "). With \"Move\" Windows asks for administrator rights; the launcher copies itself into the game folder, leaves a desktop shortcut and starts from there.\n\n" +
+                         "Tip: if the game is in Program Files, move its whole folder to a normal folder, e.g. C:\\Games\\Factorio. " +
+                         "Then neither the move nor updates need administrator rights, and this message does not appear again."),
+                    null, Tr.T("Перенести", "Move"), Tr.T("Не сейчас", "Not now"), Theme.Orange);
+                if (r != DialogResult.Yes)
+                {
+                    AppendLog("Перенос лаунчера отложен. Правильная работа гарантируется только из папки игры; лаунчер спросит снова при следующем запуске.", LogKind.Warn);
+                    lblDetail.Text = Tr.T("Лаунчер не в папке игры — правильная работа не гарантируется", "The launcher is not in the game folder: proper work is not guaranteed");
+                    return false;
+                }
+                string err2 = null;
+                if (!Relocation.TargetIsSameOrNewer(target.Dir) && !SelfUpdate.InstallElevated(exe, exe, target.Dir, out err2))
+                {
+                    AppendLog(err2 == null ? "Права администратора не выданы — перенос отложен." : "Перенос не удался: " + err2, LogKind.Warn);
+                    if (err2 != null) DarkDialog.Info(this, Tr.T("Папка игры", "Game folder"), Tr.T("Перенос не удался: ", "The move failed: ") + err2, Theme.Red);
+                    return false;
+                }
+                newExe = Path.Combine(target.Dir, AppInfo.ExeName);
+                try { Relocation.PrepareLegacyData(AppInfo.DataDir, AppInfo.ExeDir); }
+                catch (Exception ex) { AppendLog("Данные лаунчера не перенесены: " + ex.Message, LogKind.Warn); }
+            }
+            try { AppendLog("Ярлык на рабочем столе: " + Shortcuts.Desktop(newExe), LogKind.Ok); }
+            catch (Exception ex) { AppendLog("Ярлык на рабочем столе не создан: " + ex.Message, LogKind.Warn); }
+            try { SelfUpdate.Restart(newExe, "--moved-from " + FsUtil.QuoteArg(exe)); }
+            catch (Exception ex)
+            {
+                AppendLog("Не удалось запустить лаунчер из папки игры: " + ex.Message, LogKind.Error);
+                return false;
+            }
+            restarting = true;
+            BeginInvoke(new Action(Close));
+            return true;
+        }
+
+        static string EnError(string ru) => ru != null && ru.StartsWith("в папку игры нельзя") ? "the game folder cannot be written without administrator rights" : ru;
 
         /// <summary>«Проверить файлы»: read every file of the installed build again and restore what differs.</summary>
         void DoVerify()
@@ -823,13 +1208,37 @@ namespace Paranoidal
             if (err != null) { DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), err, Theme.Red); return; }
             if (FactorioInfo.IsRunning()) { DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и запустите обновление снова.", "Close the game and start the update again."), Theme.Orange); return; }
             var mods = modsDir;
-            RunOp(() => engine.Update(new SyncPaths(mods), false, target), res =>
+            // the guide goes together with the build update; only the guide when the build is current already
+            var guide = GuideUpdate ? guideRel : null;
+            bool build = !(guide != null && target == null && installed != null && installed == remote && modified <= 0);
+            RunOp(() =>
             {
-                if (res.Declined)
+                var o = new UpdateOutcome();
+                if (build) o.Res = engine.Update(new SyncPaths(mods), false, target);
+                if (guide != null && (o.Res == null || !o.Res.Declined))
+                {
+                    Stage("Скачиваю гайд по сборке " + guide.Version + "…", "Downloading the modpack guide " + guide.Version + "…");
+                    try { InstallGuide(guide); o.Guide = guide.Version; }
+                    catch (Exception ex) { o.GuideError = ex is SyncException ? ((SyncException)ex).Message : ex.Message; }
+                }
+                return o;
+            }, o =>
+            {
+                var res = o.Res;
+                if (res != null && res.Declined)
                 {
                     Idle(Tr.T("Установка отменена, файлы не тронуты.", "Installation cancelled, files untouched."));
                     lblDetail.Text = "";
                     AppendLog("Обновление отменено пользователем.", LogKind.Warn);
+                    return;
+                }
+                if (res == null)
+                {
+                    progress.Value = 1;
+                    Idle(o.Guide != null ? Tr.T("Гайд по сборке обновлён ✔", "The modpack guide is updated ✔") : Tr.T("Гайд по сборке не обновлён", "The modpack guide was not updated"));
+                    lblDetail.Text = o.Guide != null ? guideLocal : o.GuideError;
+                    ReportGuide(o);
+                    if (thenPlay) Launch();
                     return;
                 }
                 installed = res.New;
@@ -859,9 +1268,19 @@ namespace Paranoidal
                     chkPin.Checked = true;   // also sets the setting and logs it
                     AppendLog("После перехода на версию хоста включено «Не менять версию». Снимите галочку, когда хост обновится.", LogKind.Info);
                 }
+                ReportGuide(o);
                 if (thenPlay) Launch();
                 else RefreshAfterUpdate();
             });
+        }
+
+        sealed class UpdateOutcome { public UpdateResult Res; public string Guide, GuideError; }
+
+        void ReportGuide(UpdateOutcome o)
+        {
+            RefreshGuideLocal();
+            if (o.Guide != null) AppendLogHighlight("Обновился гайд по сборке Paranoidal: версия " + o.Guide + " — " + guideLocal);
+            else if (o.GuideError != null) AppendLog(o.GuideError + " Сборка от этого не зависит; гайд скачается при следующем обновлении.", LogKind.Warn);
         }
 
         void RefreshAfterUpdate()
@@ -1057,6 +1476,7 @@ namespace Paranoidal
             bool running = FactorioInfo.IsRunning();
             if (gameRunning && !running) AnalyzeLoad();
             gameRunning = running;
+            if (!running && selfUpdatePending && !busy) OfferSelfUpdate();
         }
 
         /// <summary>Reads the game's last log (the game must be closed) and shows how the load went and why.</summary>
@@ -1152,6 +1572,10 @@ namespace Paranoidal
             sb.Append("Не менять версию: ").Append(pinSetting ? "да" : "нет").Append('\n');
             sb.Append("Откат: ").Append(rollbackTarget == null ? "нет" : (rollbackNewer ? "вперёд на " : "назад на ") + AppInfo.Short(rollbackTarget) + " от " + rollbackDate).Append('\n');
             sb.Append("Кэш загрузки (галочка лаунчера): ").Append(chkCache.Checked ? "включается" : "не трогается").Append('\n');
+            sb.Append("Лаунчер: ").Append(AppInfo.Version).Append(", папка ").Append(AppInfo.ExeDir).Append(AppInfo.ExeDirWritable ? "" : " (только чтение)")
+              .Append(", последняя версия на GitHub: ").Append(launcherRel == null ? "не проверено" : launcherRel.Version).Append('\n');
+            sb.Append("Гайд по сборке: ").Append(guideLocal == null ? "не скачан" : (guideLocalVersion ?? "?") + " (" + guideLocal + ")")
+              .Append(", последняя версия: ").Append(guideRel == null ? "не проверено" : guideRel.Version).Append('\n');
             return sb.ToString();
         }
 
@@ -1234,6 +1658,7 @@ namespace Paranoidal
                 lastLoad = null;
                 ShowLoad();
                 UpdateUi();
+                if (f.Ok && MaybeRelocate(null, true)) return;
                 if (!FactorioInfo.IsRunning()) AnalyzeLoad();
                 CheckStatus();
             }
@@ -1270,14 +1695,18 @@ namespace Paranoidal
 
         void CancelOp()
         {
-            if (!busy || !cancelable || git == null) return;
+            if (!busy || !cancelable) return;
             btnCancel.Enabled = false;
             lblStage.Text = Tr.T("Отменяю…", "Cancelling…");
-            Task.Run(() => git.Cancel());
+            Releases.Cancel = true;
+            if (git != null) Task.Run(() => git.Cancel());
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            if (Auto)
+                try { File.AppendAllText(TestAuto, "=== " + AppInfo.Version + " pid " + Process.GetCurrentProcess().Id + " " + SelfUpdate.CurrentExe + "\r\n" + rtbLog.Text.Replace("\n", "\r\n") + "\r\n"); } catch { }
+            if (restarting) { gameWatch.Stop(); base.OnFormClosing(e); return; }
             if (busy)
             {
                 if (!cancelable)

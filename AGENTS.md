@@ -37,7 +37,12 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
 | `src/GameConfig.cs` | load cache keys in the `config.ini` the game reads; warning about `~` dependencies |
 | `src/LoadDiag.cs` | load diagnostics from `factorio-current/previous.log` |
 | `src/Report.cs` | «Отчёт о проблеме» ZIP |
-| `tools/` | `Harness.cs` (console driver of the engine), `UiShot.cs` (dialogs to PNG), `snap.ps1`, `testdata/` |
+| `src/Releases.cs` | release.json of the launcher's and the guide's GitHub Releases, verified downloads (size + SHA-256) |
+| `src/SelfUpdate.cs` | self-update file swap (exe -> .old, new -> exe, restart), elevated helper `--install-exe`, `StartArgs` |
+| `src/Relocation.cs` | moving the launcher into the game folder, cleanup of the old place, `Shortcuts` (IShellLink) |
+| `src/Guide.cs` | the one-file guide next to the exe: local version, install, open |
+| `tools/` | `Harness.cs` (console driver of the engine), `UiShot.cs` (dialogs and the window to PNG), `snap.ps1`, `testdata/`, `release-manifest.ps1` (release.json) |
+| `publish.ps1` | the release: checks, build, tag, push, GitHub Release, live check (`-DryRun` first) |
 | `docs/factorio-load-cache.md` | measured behaviour of the 2.0.77 load cache: the basis of `LoadDiag` and `GameConfig` |
 | `assets/` | `splash.png` (logo), `gear.png` (icon source), embedded by `build.ps1` |
 | `vendor/` | MinGit zip (checked by SHA-256 in `build.ps1`) and its licence |
@@ -53,7 +58,11 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
   version was not given to anyone). Use it to prove that a refactoring or a comment edit did not change the exe:
   build with `-Out obj/dev/ParanoidalLauncher.exe` and compare the hash.
 - `dist/` and `obj/` are not in Git. A release = a GitHub Release `vX.Y.Z` of this repository with
-  `ParanoidalLauncher.exe`, its SHA-256 and the `CHANGELOG.md` section as the notes.
+  `ParanoidalLauncher.exe` and `release.json` (version, size, SHA-256, every CHANGELOG section), marked latest, notes =
+  the CHANGELOG section. Made only by `publish.ps1` (run `-DryRun` first) and only on the owner's command: launchers
+  1.2.0+ update themselves from `releases/latest/download/release.json`, so a release reaches every player.
+- The guide (`FactorioParanoidal/guide-to-the-paranoidal`) is released by its own CI on every new `guide_version`;
+  the launcher only reads it. Formats and URLs: README «Где лаунчер ищет обновления».
 - Requirements: Visual Studio or Build Tools with Roslyn, .NET Framework 4.8 reference assemblies.
 
 ## 4. Decisions you must not undo without the team
@@ -88,7 +97,16 @@ Each one was chosen after a real problem; the reasons are what you need when a "
     network waits are short (20 s for the head check).
 11. **Data next to the exe** (`ParanoidalLauncher-data`), relative paths inside the exe folder: a whole game folder can
     be copied to another computer or over the LAN and keeps working.
-12. **The modpack's load cache.** The launcher turns the game's cache on before every start; any change of
+12. **Self-update asks every time** (owner's decision, 2026-10-28): all versions newer than the installed one with
+    their changes and a recommendation; «Обновить сейчас» / «Позже», no "never ask" option. Downloads are checked
+    by size, SHA-256 and the exe's version before the swap; the swap renames, never overwrites, a running exe.
+13. **The launcher lives in the game folder** (owner's decision, 2026-10-28): it moves itself there silently (exe,
+    data without MinGit, guide; desktop shortcut; the copy removes the old place) and asks for administrator rights
+    only when that fails, recommending to move the game out of Program Files. Only the files the launcher owns are
+    removed from the old place. Off for tests and the developer's `dist`/`obj` (`Relocation.DisabledReason`).
+14. **The guide is a local file** next to the exe, updated together with the build (owner's decision): the button
+    opens only the local copy; a guide update is offered with the build update, and logged as a highlighted line.
+15. **The modpack's load cache.** The launcher turns the game's cache on before every start; any change of
     `mod-settings.dat` (also per-user settings changed in game) and any enabled mod with a `~` dependency make
     Factorio 2.0.77 rebuild the data stage. Facts and log markers: `docs/factorio-load-cache.md`.
 
@@ -100,6 +118,15 @@ Each one was chosen after a real problem; the reasons are what you need when a "
   `git archive <commit> mods | tar -x` from a clone of the modpack.
 - `obj/Harness.exe --loaddiag-selftest tools/testdata/load-logs-2.0.77.zip` must print `SELFTEST OK` after any change
   of `LoadDiag.cs`/`GameConfig.cs`.
+- Releases, self-update and relocation: a local fake GitHub (`python -m http.server` over
+  `FactorioParanoidal/<repo>/releases/latest/download/release.json` + `releases/download/vX.Y.Z/<file>`, the manifest
+  from `tools/release-manifest.ps1`, a second launcher built from a copy of the sources with a higher version) and
+  `PARANOIDAL_LAUNCHER_TEST_GITHUB`. Engine parts through Harness (`--releases`, `--guide`, `--download-launcher`,
+  `--swap`, `--relocate`, `--cleanup-old`, `--shortcuts`); restarts end to end with `PARANOIDAL_LAUNCHER_TEST_AUTO`
+  (off-screen, no activation, journal to a file) and `PARANOIDAL_LAUNCHER_TEST_SHORTCUTS`, in a fake game folder
+  under `test-runs/` with its own `settings.ini`. Never let a test launcher see the real installations without
+  `settings.ini` pointing at the fake game: relocation would move it into the player's game folder. The UAC path cannot
+  be automated: say so in the handoff.
 - Dialogs: `tools/build-uishot.ps1` renders them to PNG without showing them. Do not click the window with posted
   messages and never take the focus from a running game.
 - **Never** use the player's real game folder, `%APPDATA%\Factorio`, saves, `mod-list.json` or `mod-settings.dat` for
@@ -114,11 +141,8 @@ Each one was chosen after a real problem; the reasons are what you need when a "
 
 Proposed by agents and discussed with the team; none is approved as a plan. Ask before starting one.
 
-- **Self-update** of the launcher from this repository's Releases (download, check SHA-256, rename the running exe to
-  `.old`, restart). Considered the most valuable: without it fixes reach only players who download again.
-- **First-start wizard**: find installations, copy the launcher into the game folder (copy and restart; a running exe
-  cannot move itself), desktop shortcut via `IShellLink` and the real desktop path (OneDrive). If the game is in
-  `Program Files`, stay where it is and only create the shortcut. Ask before deleting the original (antivirus).
+- **Code signing** of the exe: unsigned exes that replace themselves and create shortcuts are what antivirus
+  heuristics dislike most; no certificate yet.
 - **Backup of saves** before an update of the build (mod migrations are one-way), with size and age limits.
 - **Connect to a server** (`--mp-connect`) with a comparison of the host's version line before connecting.
 - **Disk space check** before an update and before the first cached start (build ~1 GB, atlas cache ~1 GB).
@@ -128,7 +152,6 @@ Proposed by agents and discussed with the team; none is approved as a plan. Ask 
 - **Startup settings that differ from the build defaults**, with a reset (players change them and cannot join the host).
 - After-start behaviour (tray / close / nothing), links to the modpack FAQ and Discord, starting Steam installs through
   Steam (`-applaunch 427520`) if direct start proves unreliable there.
-- Embedding the modpack's illustrated guide (`FactorioParanoidal/guide-to-the-paranoidal`) or a link to it.
 
 ## 7. Working rules
 
