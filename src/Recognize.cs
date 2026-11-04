@@ -17,8 +17,17 @@ namespace Paranoidal
         /// <summary>mods\zzzparanoidal\info.json exists.</summary>
         public bool Present;
         public string ZzzVersion, FactorioVersion;
+        /// <summary>The game version zzzparanoidal requires ("base >= 2.1.24"); null when it says nothing.</summary>
+        public string BaseMin;
         /// <summary>The Factorio 1.1 build (Beta 8 and older): not recognised further, the launcher only warns.</summary>
         public bool Legacy => FactorioVersion != null && !FactorioVersion.StartsWith("2.");
+        /// <summary>
+        /// A 2.x build of another line than the launcher's (a 2.0 build on the 2.1 line): it does not run on this game,
+        /// is not recognised as an installed version, and an update switches it to the launcher's line.
+        /// </summary>
+        public bool OtherLine => Present && FactorioVersion != null && !Legacy && !Lines.Current.Matches(FactorioVersion);
+        /// <summary>The line of the build (null: none or 1.1).</summary>
+        public BuildLine Line => Present ? Lines.Of(FactorioVersion) : null;
         /// <summary>Short content fingerprint of mods\ (git tree id of the folder; zip files and settings are left out).</summary>
         public string Fingerprint;
         /// <summary>A known build version whose files are all exactly here.</summary>
@@ -38,14 +47,21 @@ namespace Paranoidal
                 var info = Path.Combine(modsDir, "zzzparanoidal", "info.json");
                 if (!File.Exists(info)) return f;
                 f.Present = true;
-                var text = File.ReadAllText(info, Encoding.UTF8);
-                var m = Regex.Match(text, "\"version\"\\s*:\\s*\"([^\"]+)\"");
-                if (m.Success) f.ZzzVersion = m.Groups[1].Value.Trim();
-                m = Regex.Match(text, "\"factorio_version\"\\s*:\\s*\"([^\"]+)\"");
-                if (m.Success) f.FactorioVersion = m.Groups[1].Value.Trim();
+                Parse(File.ReadAllText(info, Encoding.UTF8), f);
             }
             catch { }
             return f;
+        }
+
+        /// <summary>Fields of zzzparanoidal's info.json (also the one of a GitHub version, RemoteBuild).</summary>
+        public static void Parse(string infoJson, BuildFound f)
+        {
+            var m = Regex.Match(infoJson, "\"version\"\\s*:\\s*\"([^\"]+)\"");
+            if (m.Success) f.ZzzVersion = m.Groups[1].Value.Trim();
+            m = Regex.Match(infoJson, "\"factorio_version\"\\s*:\\s*\"([^\"]+)\"");
+            if (m.Success) f.FactorioVersion = m.Groups[1].Value.Trim();
+            m = Regex.Match(infoJson, "\"\\s*base\\s*>=\\s*(\\d+\\.\\d+\\.\\d+)\\s*\"");
+            if (m.Success) f.BaseMin = m.Groups[1].Value;
         }
     }
 

@@ -32,7 +32,16 @@ namespace Paranoidal
                 Tr.Init();
                 if (!created)
                 {
-                    MessageBox.Show(AppInfo.Name + Tr.T(" уже запущен.", " is already running."), AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    // the running launcher restores its window and comes to the front; the message stays above it
+                    SingleInstance.Signal();
+                    var auto = Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_AUTO");
+                    if (!string.IsNullOrWhiteSpace(auto))
+                    {
+                        try { File.AppendAllText(auto, "=== second start: already running, signal sent\r\n"); } catch { }
+                        return 0;
+                    }
+                    Thread.Sleep(250);
+                    SingleInstance.Info(AppInfo.Name + Tr.T(" уже запущен: его окно показано поверх других.", " is already running: its window is shown on top."), AppInfo.Name);
                     return 0;
                 }
                 Settings.MigratePaths();

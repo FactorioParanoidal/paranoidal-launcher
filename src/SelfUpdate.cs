@@ -148,6 +148,8 @@ namespace Paranoidal
     {
         public static int WaitPid;
         public static string UpdatedFrom, MovedFrom, InstallSrc, InstallDir;
+        /// <summary>--migrated: started by the old launcher after the move to Paranoidal 2.1 (MainForm.RunMigration).</summary>
+        public static bool Migrated;
 
         public static void Parse(string[] a)
         {
@@ -159,6 +161,7 @@ namespace Paranoidal
                     case "--wait-pid": int.TryParse(next(), out WaitPid); break;
                     case "--updated-from": UpdatedFrom = next(); break;
                     case "--moved-from": MovedFrom = next(); break;
+                    case "--migrated": Migrated = true; break;
                     case "--install-exe": InstallSrc = next(); InstallDir = next(); break;
                 }
             }

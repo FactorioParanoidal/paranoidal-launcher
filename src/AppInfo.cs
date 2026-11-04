@@ -17,15 +17,17 @@ namespace Paranoidal
         /// Every change of the launcher bumps it and gets a section in CHANGELOG.md; build.ps1 refuses to build
         /// a different exe under an already built version (README.md, «Версии»).
         /// </summary>
-        public const string Version = "1.2.0";
+        public const string Version = "1.3.0";
         public const string AssemblyVersion = Version + ".0";
         public const string Owner = "FactorioParanoidal";
         public const string RepoName = "ParanoidalModpack";
         public const string RepoUrl = "https://github.com/" + Owner + "/" + RepoName + ".git";
-        public const string Branch = "pre_release_2.0";
-        public const string RequiredFactorio = "2.0.77";
-        /// <summary>The game the build needs, worded the same everywhere it is shown to the player.</summary>
-        public const string RequiredGame = "Factorio " + RequiredFactorio + " Space Age";
+        /// <summary>Branch of the build line the launcher serves (Lines.Current: pre_release_2.0 or pre_release_2.1).</summary>
+        public static string Branch => Lines.Current.Branch;
+        /// <summary>The game the build needs, worded the same everywhere it is shown to the player (Lines.Current).</summary>
+        public static string RequiredGame => Lines.Current.RequiredGame;
+        /// <summary>The modpack's Discord server (button «Discord» in the header).</summary>
+        public const string DiscordUrl = "https://discord.com/invite/AWStgXd";
         public const string MinGitVersion = "2.56.0.2-64";
 
         // ---- where the launcher looks for its own updates and the guide (README «Где лаунчер ищет обновления»).
@@ -227,10 +229,18 @@ namespace Paranoidal
             }
         }
 
+        static bool frozen;
+
+        /// <summary>
+        /// After the launcher's data folder was moved away (the move to 2.1): this process must not create it again.
+        /// </summary>
+        public static void Freeze() { frozen = true; }
+
         public static void Set(string key, string value)
         {
             Load();
             data[key] = value ?? "";
+            if (frozen) return;
             try
             {
                 Directory.CreateDirectory(AppInfo.DataDir);
@@ -287,7 +297,7 @@ namespace Paranoidal
         /// <summary>Size for the journal and files the team reads: always Russian.</summary>
         public static string SizeRu(double bytes) => Size(bytes, false);
 
-        static string Size(double bytes, bool en)
+        public static string Size(double bytes, bool en)
         {
             var c = en ? En : Ru;
             if (bytes < 1024 * 1024) return (bytes / 1024).ToString("0", c) + (en ? " KB" : " КБ");

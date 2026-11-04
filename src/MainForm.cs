@@ -17,7 +17,7 @@ namespace Paranoidal
         readonly Card cardGame = new Card("");
         readonly Label lblInstalled, lblRemote, lblStatus, lblFacPath, lblFacVer, lblModsPath, lblModsNote, lblLoad, lblStage, lblDetail;
         readonly FButton btnPickFac, btnPickMods, btnOpenMods, btnUpdate, btnPlay, btnCopy, btnVerify, btnCheck, btnCancel;
-        readonly FButton btnLang, btnRollback, btnHost, btnReport, btnGuide, btnShortcuts;
+        readonly FButton btnLang, btnRollback, btnHost, btnReport, btnGuide, btnShortcuts, btnDiscord, btn21;
         readonly ToolTip tips = new ToolTip { AutoPopDelay = 30000, InitialDelay = 400, ReshowDelay = 100 };
         readonly CheckBox chkCache, chkPin;
         readonly StripeProgress progress = new StripeProgress();
@@ -46,6 +46,11 @@ namespace Paranoidal
         ReleaseInfo launcherRel, guideRel;
         string guideLocal, guideLocalVersion;
         bool selfUpdatePending, restarting;
+        // the build on disk (its line and the game it needs) and the game version the latest build of the line needs
+        BuildFound disk;
+        string remoteReq;
+        // the move to 2.1 is over: update the build as soon as the status is known
+        bool postMigrationUpdate, autoCloseAfterUpdate;
 
         /// <summary>
         /// Tests only: PARANOIDAL_LAUNCHER_TEST_AUTO=&lt;journal file&gt; runs the window far off-screen without activation,
@@ -54,7 +59,21 @@ namespace Paranoidal
         /// </summary>
         static readonly string TestAuto = Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_AUTO");
         static bool Auto => !string.IsNullOrWhiteSpace(TestAuto);
+        /// <summary>Tests only (with TEST_AUTO): after the first status check of the 2.0 line, move to the 2.1 game in this folder.</summary>
+        static readonly string TestMigrate = Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_MIGRATE");
         protected override bool ShowWithoutActivation => Auto;
+
+        /// <summary>A second start of the launcher (Program.cs) asks this one to show its window.</summary>
+        protected override void WndProc(ref Message m)
+        {
+            if (SingleInstance.ShowMessage != 0 && (uint)m.Msg == SingleInstance.ShowMessage)
+            {
+                AppendLog("Лаунчер запущен ещё раз — показываю это окно.", LogKind.Muted);
+                if (!Auto) { try { SingleInstance.BringUp(this); } catch { } }
+                return;
+            }
+            base.WndProc(ref m);
+        }
 
         public MainForm()
         {
@@ -78,6 +97,10 @@ namespace Paranoidal
             btnLang = B(header, "", ButtonKind.Normal, () => Tr.Set(!Tr.En));
             btnGuide = B(header, "", ButtonKind.Normal, OpenGuide);
             btnShortcuts = B(header, "", ButtonKind.Normal, MakeShortcuts);
+            btnDiscord = B(header, "Discord", ButtonKind.Normal, OpenDiscord);
+            btnDiscord.Icon = DiscordIcon.Create(Theme.S(18));
+            btn21 = B(header, "Paranoidal 2.1", ButtonKind.Primary, () => StartMigration(null));
+            if (Auto) DarkDialog.Headless = t => AppendLog("[тест: диалог без показа, ответ «да»] " + t, LogKind.Muted);
 
             lblInstalled = L(cardBuild, Theme.Text);
             lblRemote = L(cardBuild, Theme.Text);
@@ -160,7 +183,7 @@ namespace Paranoidal
                 if (!busy && engine != null) { Idle(StatusIdleText()); lblDetail.Text = ""; }
             };
             Resize += (s, e) => DoLayout();
-            HandleCreated += (s, e) => Native.DarkTitle(Handle);
+            HandleCreated += (s, e) => { Native.DarkTitle(Handle); SingleInstance.Accept(Handle); };
             Shown += (s, e) => Startup();
             ApplyTexts();
             DoLayout();
@@ -262,7 +285,7 @@ namespace Paranoidal
         /// <summary>Every fixed text of the window in the interface language (called again when it changes).</summary>
         void ApplyTexts()
         {
-            cardBuild.Title = Tr.T("СБОРКА", "BUILD");
+            cardBuild.Title = Tr.T("СБОРКА ", "BUILD ") + Lines.Current.Name.ToUpperInvariant();
             cardGame.Title = Tr.T("FACTORIO И ПАПКА МОДОВ", "FACTORIO AND MODS FOLDER");
             cardBuild.Invalidate();
             cardGame.Invalidate();
@@ -271,6 +294,13 @@ namespace Paranoidal
             tips.SetToolTip(btnLang, Tr.T("Switch to English", "Переключить на русский"));
             btnGuide.Text = Tr.T("📖 Гайд", "📖 Guide");
             btnShortcuts.Text = Tr.T("Ярлыки", "Shortcuts");
+            tips.SetToolTip(btnDiscord, Tr.T("Discord сборки Factorio Paranoidal: вопросы, баги, отчёты о проблемах, анонсы и совместная игра.\n",
+                "The Factorio Paranoidal Discord: questions, bugs, problem reports, news and co-op games.\n") + AppInfo.DiscordUrl);
+            tips.SetToolTip(btn21, Tr.T(
+                "Перейти на сборку Paranoidal для Factorio 2.1. Лаунчер спросит папку Factorio 2.1, покажет, что и куда перенесёт,\n" +
+                "перенесёт туда сейвы, сборку, настройки и себя и докачает только разницу. Переезд необратим.",
+                "Switch to the Paranoidal build for Factorio 2.1. The launcher asks for the Factorio 2.1 folder, shows what goes where,\n" +
+                "moves the saves, the build, the settings and itself there and downloads only the difference. The move cannot be undone."));
             tips.SetToolTip(btnShortcuts, Tr.T(
                 "Создать ярлыки лаунчера на рабочем столе и в меню «Пуск» (папка Paranoidal, там же гайд по сборке).\n" +
                 "Сам лаунчер остаётся в папке игры: там он работает правильно.",
@@ -351,12 +381,14 @@ namespace Paranoidal
                 "mod-settings.dat, журналы лаунчера, диагностика загрузки и по желанию сейв (до 20 МБ всего).",
                 "Put a ZIP on the desktop for the modpack Discord: game logs, the version line, mod-list.json,\n" +
                 "mod-settings.dat, launcher logs, the load diagnostics and optionally a save (20 MB in total)."));
+            var dlcOn = string.Join(", ", Lines.Current.DlcStates.Where(d => d.Value).Select(d => d.Key));
+            var dlcOff = string.Join(", ", Lines.Current.DlcStates.Where(d => !d.Value).Select(d => d.Key));
             tips.SetToolTip(lblModsNote, Tr.T(
                 "Перед обновлением и запуском игры лаунчер ставит в mod-list.json:\n" +
-                "quality и elevated-rails включены, space-age выключен — как на сервере.\n" +
+                dlcOn + " включены, " + dlcOff + " выключен — как на сервере.\n" +
                 "Остальные строки mod-list.json и настройки модов (mod-settings.dat) не трогаются.",
                 "Before an update and a game start the launcher sets in mod-list.json:\n" +
-                "quality and elevated-rails on, space-age off, as on the server.\n" +
+                dlcOn + " on, " + dlcOff + " off, as on the server.\n" +
                 "Other lines of mod-list.json and the mod settings (mod-settings.dat) are not touched."));
             lvCommits.Columns[0].Text = Tr.T("Дата", "Date");
             lvCommits.Columns[1].Text = Tr.T("Что изменилось", "What changed");
@@ -383,6 +415,11 @@ namespace Paranoidal
             btnLang.Bounds = new Rectangle(S(10), S(8), hw, S(26));
             btnGuide.Bounds = new Rectangle(S(10), S(40), hw, S(26));
             btnShortcuts.Bounds = new Rectangle(S(10), S(72), hw, S(26));
+            // right column, between the version line and "for Factorio …": Discord and (2.0 line) the move to 2.1
+            int rw = Math.Max(TextRenderer.MeasureText(btnDiscord.Text, btnDiscord.Font).Width + btnDiscord.Icon.Width + S(28),
+                TextRenderer.MeasureText(btn21.Text, btn21.Font).Width + S(22));
+            btnDiscord.Bounds = new Rectangle(W - S(10) - rw, S(30), rw, S(26));
+            btn21.Bounds = new Rectangle(W - S(10) - rw, S(62), rw, S(32));
             int y = header.Bottom + m;
             int cw = (W - 3 * m) * 45 / 100, ch = S(218);
             cardBuild.Bounds = new Rectangle(m, y, cw, ch);
@@ -442,15 +479,26 @@ namespace Paranoidal
 
         bool Pinned => pinSetting && installed != null;
 
-        /// <summary>A Paranoidal 2.0 build is in mods\ even if its version is unknown: the game can be started.</summary>
-        bool BuildPresent => installed != null || (found != null && found.Present && !found.Legacy);
+        /// <summary>The build in mods\ is of another line (a 2.0 build on the 2.1 line): it must be updated before playing.</summary>
+        bool OtherLineBuild => disk != null && disk.OtherLine;
+
+        /// <summary>A Paranoidal build of this line is in mods\ even if its version is unknown: the game can be started.</summary>
+        bool BuildPresent => !OtherLineBuild && (installed != null || (found != null && found.Present && !found.Legacy));
+
+        /// <summary>"Quality, Elevated Rails, Recycler вкл., Space Age выкл." of the line, for the mods card.</summary>
+        static string DlcText(bool on)
+        {
+            Func<string, string> title = n => n == "elevated-rails" ? "Elevated Rails" : n == "space-age" ? "Space Age" : char.ToUpperInvariant(n[0]) + n.Substring(1);
+            return string.Join(", ", Lines.Current.DlcStates.Where(d => d.Value == on).Select(d => title(d.Key)));
+        }
 
         void UpdateUi()
         {
             if (installed != null)
                 lblInstalled.Text = Tr.T("Установлена версия:  ", "Installed version:  ") + (installedDate != null ? Tr.T("от ", "of ") + installedDate : Tr.T("есть", "yes"));
-            else if (found != null && found.Present && found.Legacy)
-                lblInstalled.Text = Tr.T("Установлена версия:  старая, для Factorio ", "Installed version:  old, for Factorio ") + found.FactorioVersion +
+            else if (found != null && found.Present && (found.Legacy || found.OtherLine))
+                lblInstalled.Text = Tr.T(found.Legacy ? "Установлена версия:  старая, для Factorio " : "Установлена версия:  для Factorio ",
+                    found.Legacy ? "Installed version:  old, for Factorio " : "Installed version:  for Factorio ") + found.FactorioVersion +
                     (found.ZzzVersion != null ? " (zzzparanoidal " + found.ZzzVersion + ")" : "");
             else if (found != null && found.Present && found.Near != null)
                 lblInstalled.Text = Tr.T("Установлена версия:  похожа на версию от ", "Installed version:  close to the build of ") + found.NearDate +
@@ -468,6 +516,14 @@ namespace Paranoidal
             string statusTip = null;
             if (modsDir == null)
                 Status(Tr.T("Укажите папку Factorio", "Choose the Factorio folder"), Theme.Orange);
+            else if (OtherLineBuild)
+            {
+                Status(Tr.T("⬆ Нужен переход на ", "⬆ Needs the switch to ") + Lines.Current.Name, Theme.Orange);
+                statusTip = Tr.T("В папке mods сборка Paranoidal для Factorio " + disk.FactorioVersion + ": на этой игре она не запустится.\n«" +
+                    (installed == null ? "Установить" : "Обновить") + "» переведёт её на " + Lines.Current.Name + ": скачается только разница.",
+                    "The mods folder has the Paranoidal build for Factorio " + disk.FactorioVersion + ": it does not run on this game.\n\"" +
+                    (installed == null ? "Install" : "Update") + "\" switches it to " + Lines.Current.Name + ": only the difference is downloaded.");
+            }
             else if (installed == null)
             {
                 if (found == null || !found.Present) Status(Tr.T("● Сборка ещё не установлена", "● The build is not installed yet"), Theme.Orange);
@@ -528,7 +584,7 @@ namespace Paranoidal
             lblModsPath.Text = modsDir == null ? Tr.T("Папка модов не выбрана", "No mods folder selected") : Tr.T("Моды: ", "Mods: ") + modsDir;
             lblModsNote.Text = modsDir != null && fac != null && !modsDir.Equals(Path.Combine(fac.Dir, "mods"), StringComparison.OrdinalIgnoreCase)
                 ? Tr.T("Своя папка модов: игра запускается с --mod-directory", "Own mods folder: the game starts with --mod-directory")
-                : Tr.T("Quality, Elevated Rails — вкл., Space Age — выкл.", "Quality, Elevated Rails on, Space Age off");
+                : DlcText(true) + Tr.T(" — вкл., ", " on, ") + DlcText(false) + Tr.T(" — выкл.", " off");
 
             btnRollback.Text = rollbackTarget != null && rollbackNewer ? Tr.T("Вернуть", "Return") : Tr.T("Откатить", "Roll back");
             tips.SetToolTip(btnRollback, rollbackTarget == null
@@ -545,13 +601,15 @@ namespace Paranoidal
             btnUpdate.Enabled = !busy && modsDir != null && !Pinned;
             btnPlay.Enabled = !busy && playOk;
             btnCopy.Enabled = !busy && engine != null && (installed != null || (found != null && found.Present && found.Fingerprint != null));
-            btnVerify.Enabled = !busy && installed != null && engine != null && modsOk;
+            btnVerify.Enabled = !busy && installed != null && engine != null && modsOk && !OtherLineBuild;
             btnCheck.Enabled = !busy && git != null;
             btnRollback.Enabled = !busy && rollbackTarget != null && engine != null && modsOk;
             btnHost.Enabled = !busy && engine != null && modsDir != null;
             btnReport.Enabled = !busy;
             btnGuide.Enabled = !busy;
             btnShortcuts.Enabled = !busy;
+            btn21.Visible = Lines.Current == Lines.L20;
+            btn21.Enabled = !busy && engine != null && fac != null;
             btnPickFac.Enabled = !busy;
             btnPickMods.Enabled = !busy;
             btnOpenMods.Enabled = modsOk;
@@ -623,7 +681,8 @@ namespace Paranoidal
             {
                 var details = names.Take(400).ToList();
                 if (names.Count > 400) details.Add(Tr.T("… и ещё ", "… and ") + Fmt.Num(names.Count - 400) + Tr.T("", " more"));
-                AppendLog("В папке mods не из сборки: " + Fmt.Num(names.Count), LogKind.Warn);
+                AppendLog("В папке mods не из сборки: " + Fmt.Num(names.Count) + (Auto ? " (" + string.Join(", ", names) + ")" : ""), LogKind.Warn);
+                if (Auto) { AppendLog("[тест: вопрос о лишних модах без показа, ответ «Оставить»]", LogKind.Muted); return false; }
                 var r = DarkDialog.Ask(this, Tr.T("Лишние моды", "Extra mods"),
                     Tr.T("В папке mods есть моды и файлы, которых нет в сборке (", "The mods folder has mods and files that are not in the build (") + Fmt.Num(names.Count) + ").",
                     Tr.T("Удалить их для полного соответствия сборке? Если нет — они останутся как есть, и больше про них не спросим.",
@@ -638,7 +697,10 @@ namespace Paranoidal
             return (bool)Invoke(new Func<bool>(() =>
             {
                 string message;
-                if (f != null && f.Present && f.Legacy)
+                if (f != null && f.OtherLine)
+                    message = Tr.T("В папке mods сборка Paranoidal для Factorio ", "The mods folder has the Paranoidal build for Factorio ") + f.FactorioVersion +
+                        Tr.T(": установка переведёт её на ", ": installing switches it to ") + Lines.Current.Name + ".";
+                else if (f != null && f.Present && f.Legacy)
                     message = Tr.T("В папке mods старая сборка Paranoidal для Factorio ", "The mods folder has the old Paranoidal build for Factorio ") + f.FactorioVersion +
                         (f.ZzzVersion != null ? " (zzzparanoidal " + f.ZzzVersion + ")" : "") + ".";
                 else if (f != null && f.Present)
@@ -689,6 +751,7 @@ namespace Paranoidal
                         DarkDialog.Info(this, Tr.T("Ошибка", "Error"), shown, Theme.Red);
                     }
                     UpdateUi();
+                    if (Auto && autoCloseAfterUpdate && !restarting) BeginInvoke(new Action(Close));
                     return;
                 }
                 done(t.Result);
@@ -696,7 +759,7 @@ namespace Paranoidal
             }));
         }
 
-        sealed class StartData { public GitRunner Git; public FactorioInfo Fac; public string Mods; public bool FromSettings; public List<FactorioInfo> All; }
+        sealed class StartData { public GitRunner Git; public FactorioInfo Fac; public string Mods; public bool FromSettings; public List<FactorioInfo> All; public string LineNote; }
 
         void Startup()
         {
@@ -715,11 +778,22 @@ namespace Paranoidal
             if (StartArgs.MovedFrom != null)
             {
                 var removed = Relocation.CleanupOldPlace(StartArgs.MovedFrom, exePath, AppInfo.DataDir);
-                AppendLog("Лаунчер перенесён в папку игры: " + AppInfo.ExeDir + ". Со старого места удалено: " +
-                    (removed.Count == 0 ? "ничего" : string.Join(", ", removed)) + ". На рабочем столе — ярлык «" + Path.GetFileNameWithoutExtension(Shortcuts.LauncherLink) + "».", LogKind.Ok);
-                lblDetail.Text = Tr.T("Лаунчер перенесён в папку игры, на рабочем столе — ярлык для запуска", "The launcher moved into the game folder; a shortcut is on the desktop");
+                AppendLog((StartArgs.Migrated ? "Лаунчер переехал вместе со сборкой в папку Factorio 2.1: " : "Лаунчер перенесён в папку игры: ") + AppInfo.ExeDir +
+                    ". Со старого места удалено: " + (removed.Count == 0 ? "ничего" : string.Join(", ", removed)) + ". На рабочем столе — ярлык «" +
+                    Path.GetFileNameWithoutExtension(Shortcuts.LauncherLink) + "».", LogKind.Ok);
+                lblDetail.Text = StartArgs.Migrated
+                    ? Tr.T("Лаунчер переехал в папку Factorio 2.1, на рабочем столе — ярлык для запуска", "The launcher moved into the Factorio 2.1 folder; a shortcut is on the desktop")
+                    : Tr.T("Лаунчер перенесён в папку игры, на рабочем столе — ярлык для запуска", "The launcher moved into the game folder; a shortcut is on the desktop");
             }
             RefreshGuideLocal();
+            if (ResumeMigration()) return;   // an interrupted move to 2.1 continues first
+            DetectGame();
+        }
+
+        /// <summary>First part of the start: the line (launchers before 1.3.0 wrote none), the game, the move into its folder.</summary>
+        void DetectGame()
+        {
+            bool decide = Settings.Get("line") == null;
             RunOp(() =>
             {
                 Stage("Ищу Factorio…", "Looking for Factorio…");
@@ -727,18 +801,52 @@ namespace Paranoidal
                 var sd = new StartData();
                 sd.Fac = FactorioInfo.Inspect(Settings.GetPath("factorio"));
                 sd.FromSettings = sd.Fac != null;
+                if (decide) Lines.Set(DecideLine(sd));
                 if (sd.Fac == null)
                 {
-                    sd.All = FactorioInfo.DetectAll(AppDomain.CurrentDomain.BaseDirectory);
+                    sd.All = sd.All ?? FactorioInfo.DetectAll(AppDomain.CurrentDomain.BaseDirectory);
                     sd.Fac = sd.All.FirstOrDefault(x => x.Ok) ?? sd.All.FirstOrDefault();
                 }
                 return sd;
             }, sd =>
             {
+                if (decide)
+                {
+                    Settings.Set("line", Lines.Current.Id);
+                    AppendLog(sd.LineNote, LogKind.Info);
+                    ApplyTexts();
+                    header.Invalidate();
+                }
                 fac = sd.Fac;
                 if (MaybeRelocate(sd.All, sd.FromSettings)) return;   // the copy in the game folder takes over
                 StartEngine();
             });
+        }
+
+        /// <summary>
+        /// Worker thread, no line in settings.ini yet: a 2.0 build in the mods folder (installed or copied) makes the player
+        /// one of the 2.0 line; everybody else is a new player and gets 2.1 as if there were no 2.0 (owner's decision).
+        /// </summary>
+        BuildLine DecideLine(StartData sd)
+        {
+            var mods = Settings.GetPath("mods") ?? (sd.Fac != null ? Path.Combine(sd.Fac.Dir, "mods") : null);
+            if (mods != null && BuildFound.Scan(mods).Line == Lines.L20)
+            {
+                sd.LineNote = "Линия сборки: Paranoidal 2.0 — в " + mods + " сборка для Factorio 2.0. Перейти на 2.1 — кнопка «Paranoidal 2.1».";
+                return Lines.L20;
+            }
+            if (sd.Fac == null)
+            {
+                sd.All = FactorioInfo.DetectAll(AppDomain.CurrentDomain.BaseDirectory);
+                foreach (var f in sd.All.Where(x => x.OkFor(Lines.L20)))
+                    if (BuildFound.Scan(Path.Combine(f.Dir, "mods")).Line == Lines.L20)
+                    {
+                        sd.LineNote = "Линия сборки: Paranoidal 2.0 — в " + f.Dir + "\\mods сборка для Factorio 2.0. Перейти на 2.1 — кнопка «Paranoidal 2.1».";
+                        return Lines.L20;
+                    }
+            }
+            sd.LineNote = "Линия сборки: Paranoidal 2.1 (сборки для Factorio 2.0 в папке mods нет).";
+            return Lines.L21;
         }
 
         /// <summary>Second part of the start: MinGit (unpacked only where the launcher stays), the engine, the status check.</summary>
@@ -752,6 +860,9 @@ namespace Paranoidal
                 var mods = Settings.GetPath("mods");
                 // a game folder copied elsewhere: the old absolute path of the mods folder points nowhere
                 if (mods != null && !Directory.Exists(Path.GetDirectoryName(mods) ?? mods)) mods = null;
+                // the game the installed build needs (zzzparanoidal: base >= x.y.z), before the game is checked
+                var b = BuildFound.Scan(mods ?? (f0 != null ? Path.Combine(f0.Dir, "mods") : ""));
+                if (b.Line == Lines.Current) Lines.Current.SetRequired(b.BaseMin);
                 return new StartData { Git = g, Fac = f0, Mods = mods };
             }, sd =>
             {
@@ -763,14 +874,31 @@ namespace Paranoidal
                 else AppendLog("Factorio не найдена автоматически — укажите папку кнопкой «Выбрать…».", LogKind.Warn);
                 if (modsDir != null) Settings.SetPath("mods", modsDir);
                 UpdateUi();
+                bool offer21 = false;
                 if (fac != null && !fac.Ok)
-                    DarkDialog.Info(this, Tr.T("Версия Factorio", "Factorio version"), fac.Problem() +
-                        Tr.T("\n\nЗапуск игры из программы будет недоступен. Укажите другую папку Factorio кнопкой «Выбрать…».",
-                             "\n\nThe game cannot be started from the launcher. Choose another Factorio folder with \"Choose…\"."), Theme.Red);
+                {
+                    // Steam (or the player) updated the game of the 2.0 line to 2.1: the move to 2.1 without moving files
+                    if (Lines.Current == Lines.L20 && fac.OkFor(Lines.L21) && !Auto)
+                    {
+                        AppendLog("Игра в " + fac.Dir + " теперь версии " + fac.Version + ": сборка Paranoidal 2.0 на ней не запустится. Предлагаю перейти на 2.1.", LogKind.Warn);
+                        offer21 = DarkDialog.Ask(this, "Paranoidal 2.1", Tr.T("Factorio обновилась до ", "Factorio was updated to ") + fac.Version,
+                            Tr.T("Сборка Paranoidal 2.0 на этой версии игры не запустится. Перейти на Paranoidal 2.1? Лаунчер покажет, что изменится, и докачает только разницу.\n\n" +
+                                 "Играть на 2.0 дальше: верните игру на версию " + Lines.L20.MinGame + " (в Steam — Свойства → «Бета-версии») или укажите другую папку кнопкой «Выбрать…».",
+                                 "The Paranoidal 2.0 build does not run on this game version. Switch to Paranoidal 2.1? The launcher shows what changes and downloads only the difference.\n\n" +
+                                 "To keep playing 2.0, return the game to " + Lines.L20.MinGame + " (Steam: Properties → \"Betas\") or choose another folder with \"Choose…\"."),
+                            null, Tr.T("Перейти на 2.1", "Switch to 2.1"), Tr.T("Не сейчас", "Not now"), Theme.Orange) == DialogResult.Yes;
+                        if (!offer21) AppendLog("Переход на 2.1 отложен.", LogKind.Muted);
+                    }
+                    else
+                        DarkDialog.Info(this, Tr.T("Версия Factorio", "Factorio version"), fac.Problem() +
+                            Tr.T("\n\nЗапуск игры из программы будет недоступен. Укажите другую папку Factorio кнопкой «Выбрать…».",
+                                 "\n\nThe game cannot be started from the launcher. Choose another Factorio folder with \"Choose…\"."), Theme.Red);
+                }
                 gameRunning = FactorioInfo.IsRunning();
                 gameWatch.Start();
                 if (!gameRunning) AnalyzeLoad();
-                CheckStatus();
+                if (offer21) StartMigration(fac);
+                else CheckStatus();
             });
         }
 
@@ -780,6 +908,9 @@ namespace Paranoidal
             if (remote == null && offline && !BuildPresent) return Tr.T("Нет связи с GitHub — установить сборку сейчас нельзя", "No connection to GitHub: the build cannot be installed now");
             else if (remote == null && offline) return Tr.T("Нет связи с GitHub — играть можно, обновление недоступно", "No connection to GitHub: you can play, updating is not possible");
             else if (remote == null) return Tr.T("Не удалось проверить обновления", "Could not check for updates");
+            else if (OtherLineBuild)
+                return Tr.T("Сборка для Factorio " + disk.FactorioVersion + " — «" + (installed == null ? "Установить" : "Обновить") + "» переведёт её на " + Lines.Current.Name + " (скачается только разница)",
+                    "The build is for Factorio " + disk.FactorioVersion + ": \"" + (installed == null ? "Install" : "Update") + "\" switches it to " + Lines.Current.Name + " (only the difference is downloaded)");
             else if (installed == null)
             {
                 if (found != null && found.Present && found.Legacy)
@@ -801,16 +932,22 @@ namespace Paranoidal
             var mods = modsDir;
             // the launcher's and the guide's releases are checked at the same time as the build
             var releases = Task.Run(() => Releases.CheckAll());
+            // which game the latest build of the line needs (zzzparanoidal of the branch head on GitHub)
+            var branch = Lines.Current.Branch;
+            var head = Task.Run(() => RemoteBuild.Info(branch));
             RunOp(() =>
             {
                 var s = engine.CheckStatus(mods);
                 ReleaseCheck rc;
                 try { rc = releases.Result; } catch (Exception ex) { rc = new ReleaseCheck { LauncherError = ex.GetBaseException().Message, GuideError = ex.GetBaseException().Message }; }
-                return Tuple.Create(s, rc);
+                BuildFound hi = null;
+                try { hi = head.Result; } catch { }
+                return Tuple.Create(s, rc, hi);
             }, res =>
             {
                 var st = res.Item1;
                 ApplyStatus(st, false);
+                ApplyRequirement(res.Item3);
                 ApplyReleases(res.Item2, st.Offline);
                 Idle(StatusIdleText());
                 progress.Value = installed != null && installed == remote ? 1 : 0;
@@ -820,10 +957,41 @@ namespace Paranoidal
                     lblDetail.Text = st.CommitsAreNew && st.Commits != null
                         ? Tr.T("Новых изменений в сборке: ", "New changes in the build: ") + st.Commits.Count + Tr.T(" — смотрите вкладку «Что нового»", ": see the \"What's new\" tab")
                         : lblDetail.Text.StartsWith(Tr.T("Лаунчер ", "The launcher ")) ? lblDetail.Text : "";
+                if (postMigrationUpdate && !restarting)
+                {
+                    // the player agreed to the move: the build is switched to 2.1 right away (only the difference)
+                    postMigrationUpdate = false;
+                    if (remote != null && modsDir != null && (installed != remote || OtherLineBuild) && !Pinned)
+                    {
+                        AppendLog("Обновляю сборку до " + Lines.Current.Name + ": скачается только разница.", LogKind.Info);
+                        autoCloseAfterUpdate = Auto;
+                        DoUpdate(false, null);
+                        OfferSelfUpdate();
+                        return;
+                    }
+                    if (remote == null) AppendLog("Нет связи с GitHub: сборка перейдёт на 2.1 по кнопке «Обновить», когда появится связь.", LogKind.Warn);
+                }
                 OfferSelfUpdate();
+                if (Auto && TestMigrate != null && Lines.Current == Lines.L20 && !restarting && !busy) { StartMigration(null); return; }   // tests: the move
                 if (Auto && !restarting && !busy && guideLocal == null && guideRel != null) OpenGuide();   // tests: the download path of «Гайд»
                 else if (Auto && !restarting && !busy) BeginInvoke(new Action(Close));
             });
+        }
+
+        /// <summary>
+        /// The game version the build needs: the installed build's own requirement, else the one of the latest build of
+        /// the line; a warning when the latest build needs a newer game than the player has.
+        /// </summary>
+        void ApplyRequirement(BuildFound head)
+        {
+            var line = Lines.Current;
+            remoteReq = head != null && line.Matches(head.FactorioVersion) ? head.BaseMin : null;
+            var local = disk != null && disk.Line == line ? disk.BaseMin : null;
+            line.SetRequired(local ?? remoteReq);
+            header.Invalidate();
+            if (remoteReq != null && fac != null && !line.Exact && line.Matches(fac.Version) && Releases.Compare(fac.Version, remoteReq) < 0 && remote != installed)
+                AppendLog("Новая версия сборки требует Factorio " + remoteReq + " или новее, а у вас " + fac.Version +
+                    ". Обновите игру: иначе после обновления сборки играть будет нельзя.", LogKind.Warn);
         }
 
         // ------------------------------------------------------------------ launcher and guide releases
@@ -1026,6 +1194,215 @@ namespace Paranoidal
             });
         }
 
+        // ------------------------------------------------------------------ the move to Paranoidal 2.1 (Migration.cs)
+
+        /// <summary>
+        /// «Paranoidal 2.1»: the folder of the 2.1 game (one found or chosen by hand; `preset`: chosen already, also the 2.0
+        /// game updated to 2.1 in place), then the plan with every warning, then the move after the player's yes.
+        /// </summary>
+        void StartMigration(FactorioInfo preset)
+        {
+            if (busy || engine == null || Lines.Current != Lines.L20) return;
+            if (fac == null)
+            {
+                DarkDialog.Info(this, "Paranoidal 2.1", Tr.T("Сначала укажите папку вашей игры кнопкой «Выбрать…».", "First choose the folder of your game with \"Choose…\"."), Theme.Orange);
+                return;
+            }
+            if (FactorioInfo.IsRunning())
+            {
+                DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и начните переезд снова.", "Close the game and start the move again."), Theme.Orange);
+                return;
+            }
+            var mods = modsDir;
+            var near = AppInfo.ExeDir;
+            AppendLog("Переезд на Paranoidal 2.1: " + (preset != null ? "игра " + preset.Dir : "ищу Factorio 2.1") + ".", LogKind.Info);
+            RunOp(() =>
+            {
+                Stage("Ищу Factorio 2.1…", "Looking for Factorio 2.1…");
+                Progress(null, "");
+                // the game the latest 2.1 build needs
+                var head = RemoteBuild.Info(Lines.L21.Branch);
+                if (head != null && Lines.L21.Matches(head.FactorioVersion)) Lines.L21.SetRequired(head.BaseMin);
+                var all = preset != null ? new List<FactorioInfo>() : FactorioInfo.DetectAll(near).Where(x => x.OkFor(Lines.L21)).ToList();
+                List<string> foreign = null;
+                try { if (mods != null) foreign = engine.ForeignEntries(new SyncPaths(mods)); } catch { }
+                return Tuple.Create(all, foreign);
+            }, r =>
+            {
+                Idle("");
+                var target = preset;
+                if (target == null)
+                {
+                    AppendLog("Найдено подходящих установок Factorio 2.1: " + r.Item1.Count + (r.Item1.Count > 0 ? " (" + string.Join("; ", r.Item1.Select(x => x.Dir)) + ")" : "") +
+                        ". Нужна Factorio " + Lines.L21.VersionWords(false) + ".", LogKind.Muted);
+                    var dir = Auto ? TestMigrate : Dialogs.ChooseMigrationTarget(this, r.Item1);
+                    if (dir == null) { AppendLog("Переезд на 2.1 отменён.", LogKind.Muted); return; }
+                    target = FactorioInfo.Inspect(dir);
+                    var problem = target == null
+                        ? Tr.T("В папке\n", "The folder\n") + dir + Tr.T("\nнет bin\\x64\\factorio.exe.", "\nhas no bin\\x64\\factorio.exe.")
+                        : target.Problem(Lines.L21);
+                    if (problem != null)
+                    {
+                        AppendLog("Переезд на 2.1: папка " + dir + " не подходит (" + (target == null ? "нет factorio.exe" : target.Describe(false, Lines.L21)) + ").", LogKind.Warn);
+                        DarkDialog.Info(this, "Paranoidal 2.1", problem, Theme.Red);
+                        return;
+                    }
+                }
+                AppendLog("Переезд на 2.1: " + target.Dir + " (" + target.Describe(false, Lines.L21) + ").", LogKind.Info);
+                PlanMigration(target, r.Item2);
+            });
+        }
+
+        void PlanMigration(FactorioInfo target, List<string> foreign)
+        {
+            var old = fac;
+            var mods = modsDir ?? Path.Combine(fac.Dir, "mods");
+            RunOp(() =>
+            {
+                Stage("Готовлю переезд: считаю, что и куда перенести…", "Preparing the move: what goes where…");
+                Progress(null, "");
+                return Migration.Plan(old, mods, SelfUpdate.CurrentExe, AppInfo.DataDir, target, foreign);
+            }, plan =>
+            {
+                Idle("");
+                if (plan.Error != null)
+                {
+                    AppendLog("Переезд на 2.1 невозможен: " + plan.Error, LogKind.Warn);
+                    DarkDialog.Info(this, "Paranoidal 2.1", Tr.T(plan.Error, plan.ErrorEn), Theme.Red);
+                    return;
+                }
+                AppendLog("План переезда на 2.1: шагов " + plan.Steps.Count + ", сейвов " + plan.Saves + (plan.ModsStay ? ", папка модов остаётся на месте" : ", сборка " + Fmt.SizeRu(plan.ModsBytes)) +
+                    (plan.InPlace ? " (игра уже 2.1, файлы не переносятся)" : plan.SharedWd ? " (у игр одна папка данных " + plan.NewWd + ")" : "") + ".", LogKind.Info);
+                if (!Auto && !Dialogs.ConfirmMigration(this, plan)) { AppendLog("Переезд на 2.1 отменён.", LogKind.Muted); return; }
+                AppendLog("Переезд на 2.1 подтверждён.", LogKind.Info);
+                RunMigration(plan, false);
+            });
+        }
+
+        /// <summary>
+        /// Runs the steps of the move that are not done. `here`: this launcher already lives in the 2.1 folder (or the game
+        /// was updated in place) and goes on itself; otherwise it hands over to the copy in the 2.1 folder and closes.
+        /// </summary>
+        void RunMigration(MigrationPlan plan, bool here)
+        {
+            bool handOver = !here && !plan.InPlace;
+            // an interruption before the data folder moves: the next start of this launcher continues from settings.ini
+            if (handOver && Relocation.SameDir(AppInfo.DataDir, plan.OldData) && Directory.Exists(plan.OldData)) Settings.Set("migrating", plan.NewDir);
+            autoCloseAfterUpdate = Auto;
+            RunOp(() =>
+            {
+                CanCancel(false);
+                Stage("Переезжаю на Paranoidal 2.1…", "Moving to Paranoidal 2.1…");
+                Progress(0, Tr.T("Не закрывайте программу.", "Do not close the launcher."));
+                try { Migration.Run(plan, l => Log("Переезд: " + l + ".", LogKind.Muted), Progress); }
+                catch (Exception ex)
+                {
+                    // the data folder has gone to the new place: this process must not create it again
+                    if (handOver && !Directory.Exists(plan.OldData)) Settings.Freeze();
+                    throw new SyncException("Переезд на 2.1 прерван: " + ex.Message + "\nСделанное не пропадёт: запустите лаунчер снова — он продолжит с того же места.",
+                        "The move to 2.1 stopped: " + ex.Message + "\nNothing done is lost: start the launcher again, it continues from here.");
+                }
+                return true;
+            }, _ =>
+            {
+                if (!handOver)
+                {
+                    FinishMigration(plan);
+                    if (engine == null) DetectGame(); else CheckStatus();
+                    return;
+                }
+                Settings.Freeze();   // the data folder is in the new place now
+                AppendLog("Переезд на 2.1: файлы перенесены, запускаю лаунчер из " + plan.NewDir + ".", LogKind.Ok);
+                try { SelfUpdate.Restart(plan.NewExe, "--moved-from " + FsUtil.QuoteArg(plan.OldExe) + " --migrated"); }
+                catch (Exception ex)
+                {
+                    AppendLog("Не удалось запустить лаунчер из " + plan.NewDir + ": " + ex.Message, LogKind.Error);
+                    DarkDialog.Info(this, "Paranoidal 2.1", Tr.T("Всё перенесено в " + plan.NewDir + ", но лаунчер оттуда не запустился: " + ex.Message +
+                        "\nЗапустите его ярлыком «Paranoidal Launcher» на рабочем столе — он закончит переезд.",
+                        "Everything was moved to " + plan.NewDir + ", but the launcher did not start from there: " + ex.Message +
+                        "\nStart it with the \"Paranoidal Launcher\" desktop shortcut: it finishes the move."), Theme.Red);
+                }
+                restarting = true;
+                BeginInvoke(new Action(Close));
+            });
+        }
+
+        /// <summary>
+        /// An unfinished move to 2.1 (power cut, the launcher killed): the plan next to this exe (the launcher in the 2.1
+        /// folder) or the one settings.ini points to (the launcher in the 2.0 folder) continues. True: it runs now.
+        /// </summary>
+        bool ResumeMigration()
+        {
+            var plan = Migration.Load(Path.Combine(AppInfo.ExeDir, MigrationPlan.FileName));
+            bool here = plan != null && Relocation.SameDir(plan.NewDir, AppInfo.ExeDir);
+            if (!here)
+            {
+                plan = null;
+                var dir = Settings.Get("migrating");
+                if (dir != null)
+                {
+                    var p = Migration.Load(Path.Combine(dir, MigrationPlan.FileName));
+                    if (p != null && !p.Finished && Relocation.SameDir(p.OldExe, SelfUpdate.CurrentExe)) plan = p;
+                    else Settings.Set("migrating", "");
+                }
+            }
+            if (plan == null) return false;
+            if (plan.Finished)
+            {
+                FinishMigration(plan);
+                return false;
+            }
+            AppendLog("Переезд на Paranoidal 2.1 не был закончен — продолжаю с того же места (сделано шагов: " +
+                plan.Steps.Count(s => s.Done) + " из " + plan.Steps.Count + ").", LogKind.Warn);
+            RunMigration(plan, here);
+            return true;
+        }
+
+        /// <summary>The move is over, this launcher serves 2.1: the plan goes; the build update to 2.1 follows the status check.</summary>
+        void FinishMigration(MigrationPlan plan)
+        {
+            Migration.Finish(plan);
+            Lines.Set(Lines.L21);
+            pinSetting = false;
+            chkPin.Checked = false;
+            rollbackTarget = null;
+            lastLoad = null;
+            ShowLoad();
+            postMigrationUpdate = true;
+            AppendLog("Переезд на Paranoidal 2.1 закончен: " + (plan.InPlace ? "игра в " + plan.NewDir + " уже 2.1, файлы не переносились" : plan.OldDir + " → " + plan.NewDir) +
+                ". Дальше лаунчер переведёт сборку на 2.1 (скачается только разница).", LogKind.Ok);
+            lblDetail.Text = Tr.T("Переезд на Paranoidal 2.1 закончен — дальше сборка обновится до 2.1", "The move to Paranoidal 2.1 is done: next the build is updated to 2.1");
+            ApplyTexts();
+            header.Invalidate();
+            UpdateUi();
+        }
+
+        /// <summary>«Версия хоста…» with a host of the other line: no switch is possible, the message says who should move.</summary>
+        void OtherLineHost(BuildLine host)
+        {
+            AppendLog("Хост играет на " + host.Name + ", а у вас " + Lines.Current.Name + ": перейти на его версию нельзя.", LogKind.Warn);
+            DarkDialog.Info(this, Tr.T("Версия хоста", "Host's version"),
+                Tr.T("Хост играет на " + host.Name + ", а у вас " + Lines.Current.Name + ". ", "The host plays " + host.Name + ", you have " + Lines.Current.Name + ". ") +
+                (Lines.Current == Lines.L20
+                    ? Tr.T("Чтобы играть с ним, перейдите на 2.1 кнопкой «Paranoidal 2.1».", "To play with the host, move to 2.1 with the \"Paranoidal 2.1\" button.")
+                    : Tr.T("Вернуться на 2.0 этим лаунчером нельзя: попросите хоста перейти на 2.1 (кнопка «Paranoidal 2.1» в его лаунчере).",
+                           "This launcher cannot go back to 2.0: ask the host to move to 2.1 (the \"Paranoidal 2.1\" button of the host's launcher).")),
+                Theme.Orange);
+        }
+
+        void OpenDiscord()
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(AppInfo.DiscordUrl) { UseShellExecute = true });
+                AppendLog("Открыт Discord сборки: " + AppInfo.DiscordUrl, LogKind.Muted);
+            }
+            catch (Exception ex)
+            {
+                DarkDialog.Info(this, "Discord", Tr.T("Не удалось открыть браузер: ", "Could not open the browser: ") + ex.Message + "\n" + AppInfo.DiscordUrl, Theme.Red);
+            }
+        }
+
         // ------------------------------------------------------------------ the launcher's place: the game folder
 
         /// <summary>
@@ -1161,6 +1538,7 @@ namespace Paranoidal
         {
             installed = st.Installed;
             installedDate = st.InstalledDate;
+            disk = st.Disk;
             remote = keepRemote ? (st.Remote ?? remote) : st.Remote;
             offline = st.Remote == null ? (keepRemote ? offline && remote == null : st.Offline) : false;
             modified = st.Modified;
@@ -1207,6 +1585,17 @@ namespace Paranoidal
             var err = SyncPaths.Validate(modsDir);
             if (err != null) { DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), err, Theme.Red); return; }
             if (FactorioInfo.IsRunning()) { DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и запустите обновление снова.", "Close the game and start the update again."), Theme.Orange); return; }
+            // the latest build needs a newer game than the player has: the build can be updated, the game must follow
+            if (target == null && remoteReq != null && fac != null && !Lines.Current.Exact && Lines.Current.Matches(fac.Version) &&
+                Releases.Compare(fac.Version, remoteReq) < 0 && remote != installed && !Auto)
+            {
+                var a = DarkDialog.Ask(this, Tr.T("Нужна новая версия игры", "A newer game is needed"),
+                    Tr.T("Новая версия сборки требует Factorio ", "The new build version needs Factorio ") + remoteReq + Tr.T(" или новее", " or newer"),
+                    Tr.T("У вас Factorio " + fac.Version + ". Сборка обновится, но играть можно будет только после обновления игры. Обновить сборку сейчас?",
+                         "You have Factorio " + fac.Version + ". The build will be updated, but you can play only after updating the game. Update the build now?"),
+                    null, Tr.T("Обновить сборку", "Update the build"), Tr.T("Отмена", "Cancel"), Theme.Orange);
+                if (a != DialogResult.Yes) return;
+            }
             var mods = modsDir;
             // the guide goes together with the build update; only the guide when the build is current already
             var guide = GuideUpdate ? guideRel : null;
@@ -1291,9 +1680,13 @@ namespace Paranoidal
             RunOp(() => engine.CheckStatus(mods), st =>
             {
                 ApplyStatus(st, true);
+                // the game the build needs now (a newer build may need a newer game)
+                if (disk != null && disk.Line == Lines.Current) Lines.Current.SetRequired(disk.BaseMin);
+                header.Invalidate();
                 Idle(stage);
                 progress.Value = 1;
                 lblDetail.Text = detail;
+                if (Auto && autoCloseAfterUpdate && !restarting) BeginInvoke(new Action(Close));   // tests: the update after the move
             });
         }
 
@@ -1361,6 +1754,8 @@ namespace Paranoidal
             if (line == null) return;
             var sha = VersionLine.ParseHost(line);
             if (sha == null) return;
+            var hostLine = VersionLine.ParseHostLine(line);
+            if (hostLine != null && hostLine != Lines.Current) { OtherLineHost(hostLine); return; }
             if (installed != null && installed.StartsWith(sha))
             {
                 DarkDialog.Info(this, Tr.T("Версия хоста", "Host's version"), Tr.T("У вас уже установлена эта версия сборки.", "You already have this build version."), Theme.Green);
@@ -1372,12 +1767,19 @@ namespace Paranoidal
             {
                 Stage("Ищу версию хоста на GitHub…", "Looking the host's version up on GitHub…");
                 Progress(null, "");
-                try { return GitHubApi.Commit(sha); }
+                CommitInfo ci;
+                try { ci = GitHubApi.Commit(sha); }
                 catch (Exception ex) { throw new SyncException("Версия " + sha + " не найдена на GitHub: " + ex.Message, "Version " + sha + " was not found on GitHub: " + ex.Message); }
-            }, c =>
+                // a bare commit id says nothing about the line: its zzzparanoidal does
+                var bi = ci == null ? null : RemoteBuild.Info(ci.Sha);
+                return Tuple.Create(ci, bi);
+            }, res =>
             {
                 Idle("");
+                var c = res.Item1;
                 if (c == null) { DarkDialog.Info(this, Tr.T("Версия хоста", "Host's version"), Tr.T("Версия не найдена на GitHub.", "The version was not found on GitHub."), Theme.Red); return; }
+                var bl = res.Item2 == null ? null : Lines.Of(res.Item2.FactorioVersion);
+                if (bl != null && bl != Lines.Current) { OtherLineHost(bl); return; }
                 var r = DarkDialog.Ask(this, Tr.T("Версия хоста", "Host's version"),
                     Tr.T("Перейти на версию сборки от ", "Switch to the build of ") + (c.Date == default(DateTime) ? "?" : Fmt.Date(c.Date)) + "?",
                     "«" + c.Message + "» (" + AppInfo.Short(c.Sha) + ")\n" +
@@ -1442,7 +1844,7 @@ namespace Paranoidal
                     ". Первые два запуска будут долгими, дальше — быстрые.", LogKind.Ok);
             if (tilde.Count > 0)
                 Log("Кэш данных игры работать не будет: у модов " + string.Join(", ", tilde) +
-                    " в info.json есть зависимость с «~» (ошибка Factorio 2.0: игра каждый раз пересобирает данные). Подробности — FAQ сборки, вопрос о долгой загрузке.", LogKind.Warn);
+                    " в info.json есть зависимость с «~» (ошибка Factorio, есть в 2.0.77 и 2.1.24: игра каждый раз пересобирает данные). Подробности — FAQ сборки, вопрос о долгой загрузке.", LogKind.Warn);
         }
 
         void StartGame()
@@ -1558,6 +1960,11 @@ namespace Paranoidal
         string StateText()
         {
             var sb = new StringBuilder();
+            sb.Append("Линия сборки: ").Append(Lines.Current.Name).Append(" (ветка ").Append(Lines.Current.Branch).Append("), нужна ").Append(Lines.Current.RequiredGame)
+              .Append(remoteReq != null ? ", последняя сборка требует " + remoteReq : "").Append('\n');
+            if (disk != null && disk.Present)
+                sb.Append("Сборка на диске: zzzparanoidal ").Append(disk.ZzzVersion ?? "?").Append(", factorio_version ").Append(disk.FactorioVersion ?? "?")
+                  .Append(", base >= ").Append(disk.BaseMin ?? "?").Append(disk.OtherLine ? " (другая линия: нужен переход)" : "").Append('\n');
             sb.Append("Установлена версия: ").Append(installed == null ? "не записана" : AppInfo.Short(installed) + " от " + (installedDate ?? "?")).Append('\n');
             if (found != null && found.Present)
             {
@@ -1638,6 +2045,18 @@ namespace Paranoidal
                 if (f == null)
                 {
                     DarkDialog.Info(this, Tr.T("Factorio не найдена", "Factorio not found"), Tr.T("В папке\n", "The folder\n") + dlg.SelectedPath + Tr.T("\nнет bin\\x64\\factorio.exe.", "\nhas no bin\\x64\\factorio.exe."), Theme.Red);
+                    return;
+                }
+                if (!f.Ok && Lines.Current == Lines.L20 && f.OkFor(Lines.L21) && engine != null)
+                {
+                    // a 2.1 game chosen on the 2.0 line: that is the move to 2.1 (from the 2.0 game, or in place without one)
+                    var a = DarkDialog.Ask(this, "Paranoidal 2.1", Tr.T("Это Factorio ", "This is Factorio ") + f.Version,
+                        Tr.T("Сборка Paranoidal 2.0 на ней не запустится. Перейти на Paranoidal 2.1 с этой игрой? Лаунчер сначала покажет, что и куда перенесёт.",
+                             "The Paranoidal 2.0 build does not run on it. Switch to Paranoidal 2.1 with this game? The launcher first shows what goes where."),
+                        null, Tr.T("Перейти на 2.1", "Switch to 2.1"), Tr.T("Отмена", "Cancel"), Theme.Orange);
+                    if (a != DialogResult.Yes) return;
+                    if (fac == null || !fac.Ok) { fac = f; Settings.SetPath("factorio", f.Dir); }
+                    StartMigration(f);
                     return;
                 }
                 if (!f.Ok)

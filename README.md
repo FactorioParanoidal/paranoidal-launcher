@@ -5,18 +5,23 @@
 
 **Скачать:** [Releases](../../releases) → `ParanoidalLauncher.exe`, прямая ссылка на последнюю версию:
 https://github.com/FactorioParanoidal/paranoidal-launcher/releases/latest/download/ParanoidalLauncher.exe.
-Положите его в папку Factorio 2.0.77 и запустите. Если запустить из другого места, лаунчер 1.2.0+ сам переедет в
-папку игры. Если Windows пишет «Windows защитила ваш компьютер», нажмите «Подробнее» → «Выполнить в любом случае»
+Положите его в папку Factorio 2.1 (2.1.24 или новее) и запустите; у кого уже стоит сборка для 2.0 — в папку
+Factorio 2.0.77. Если запустить из другого места, лаунчер 1.2.0+ сам переедет в папку игры. Если Windows пишет «Windows защитила ваш компьютер», нажмите «Подробнее» → «Выполнить в любом случае»
 (у exe нет цифровой подписи).
 
 История изменений — `CHANGELOG.md`. Агентам и разработчикам: начните с `AGENTS.md`.
 
 ## Что умеет
 
-- Ставит и обновляет папку `mods` до ветки `pre_release_2.0` репозитория
+- Ставит и обновляет папку `mods` до ветки своей линии сборки (`pre_release_2.1` или `pre_release_2.0`) репозитория
   [FactorioParanoidal/ParanoidalModpack](https://github.com/FactorioParanoidal/ParanoidalModpack). Скачивается
   только разница.
-- Проверяет игру: нужна Factorio 2.0.77 с файлами дополнений Space Age. Запускает её с `--mod-directory`.
+- Проверяет игру: для Paranoidal 2.1 — Factorio 2.1.24 или новее 2.1.x (сколько именно, говорит zzzparanoidal
+  сборки) с дополнениями space-age, quality, elevated-rails, recycler; для Paranoidal 2.0 — ровно 2.0.77 с Space Age.
+  Запускает её с `--mod-directory`.
+- «Paranoidal 2.1» — переезд игрока 2.0 на 2.1: сейвы, сборка, настройки и сам лаунчер переезжают в папку
+  Factorio 2.1, докачивается только разница.
+- Папки, которые убрала или переименовала сама сборка, удаляются без вопросов; спрашивает только про свои моды игрока.
 - «Проверить файлы» — сверяет всю сборку с GitHub побайтно и докачивает отличия.
 - Узнаёт сборку, которая уже лежит в папке (скопирована, распакована, получена по сети), без интернета.
 - «Откатить» / «Вернуть» — шаг назад и вперёд без интернета. «Не менять версию» и «Версия хоста…» — играть на той
@@ -26,6 +31,8 @@ https://github.com/FactorioParanoidal/paranoidal-launcher/releases/latest/downlo
 - «📖 Гайд» — иллюстрированный гайд по сборке одним HTML-файлом рядом с лаунчером; обновляется вместе со сборкой.
 - Переезжает в папку игры, если запущен из другого места; «Ярлыки» — рабочий стол и меню «Пуск».
 - Строка диагностики загрузки: сколько грузилась игра и сработал ли кэш.
+- Кнопка Discord — сервер сборки.
+- Повторный запуск показывает окно уже открытого лаунчера поверх остальных.
 - Интерфейс на русском и английском.
 - Работает без интернета: играть, откатываться и делать отчёт можно и так.
 
@@ -56,7 +63,8 @@ https://github.com/FactorioParanoidal/paranoidal-launcher/releases/latest/downlo
 
 | Что | Где | Как |
 |---|---|---|
-| Сборка | `FactorioParanoidal/ParanoidalModpack`, ветка `pre_release_2.0` | git (папка `mods`) и REST API (список изменений) |
+| Сборка | `FactorioParanoidal/ParanoidalModpack`, ветка линии (`pre_release_2.1` / `pre_release_2.0`) | git (папка `mods`) и REST API (список изменений) |
+| Какая нужна игра | `raw.githubusercontent.com/…/<ветка или коммит>/mods/zzzparanoidal/info.json` | `factorio_version` и `base >= x.y.z` (`RemoteBuild`) |
 | Сам лаунчер | Releases `FactorioParanoidal/paranoidal-launcher` | `releases/latest/download/release.json`, файл `ParanoidalLauncher.exe` |
 | Гайд | Releases `FactorioParanoidal/guide-to-the-paranoidal` | `releases/latest/download/release.json`, файл `Guide_to_the_Paranoidal.html` |
 
@@ -84,7 +92,7 @@ https://github.com/FactorioParanoidal/paranoidal-launcher/releases/latest/downlo
 ## Папка игры (`src/Relocation.cs`)
 
 - Правильная работа гарантируется только из папки игры. При запуске (до распаковки MinGit) лаунчер находит игру:
-  из настроек, иначе поиском. Если подходящих установок 2.0.77 Space Age несколько — спрашивает, какую выбрать.
+  из настроек, иначе поиском. Если подходящих для его линии установок несколько — спрашивает, какую выбрать.
 - Лежит в другом месте — молча переезжает: копирует exe как `ParanoidalLauncher.exe` (если там нет той же или более
   новой версии — иначе запускается та) и свою папку данных (без MinGit, пути в `settings.ini` — абсолютные, новый
   exe делает их относительными), гайд; создаёт ярлык на рабочем столе; запускает копию с `--moved-from <старый exe>`
@@ -93,11 +101,48 @@ https://github.com/FactorioParanoidal/paranoidal-launcher/releases/latest/downlo
 - Не получилось (Program Files и др.) — окно: правильная работа только из папки игры, «Перенести» просит права
   администратора, совет перенести игру в обычную папку. «Не сейчас» — спросит при следующем запуске. В режиме
   администратора данные идут в `%LOCALAPPDATA%\ParanoidalUpdater`.
-- Игра не найдена или не 2.0.77 Space Age — переезда нет, пока игру не выберут («Выбрать…» тоже запускает переезд).
+- Игра не найдена или не подходит линии — переезда нет, пока игру не выберут («Выбрать…» тоже запускает переезд).
 - Выключено: `PARANOIDAL_LAUNCHER_NO_RELOCATE=1`, задана `PARANOIDAL_LAUNCHER_DATA_DIR`, рядом с exe лежит
   `build-info.txt` (папка сборки `dist`/`obj`).
 - «Ярлыки»: рабочий стол (настоящий путь, с учётом OneDrive) и «Пуск» → `Paranoidal` (лаунчер и гайд), через
   `IShellLink`.
+
+<a id="lines"></a>
+## Линии сборки и переезд на 2.1 (`src/Lines.cs`, `src/Migration.cs`)
+
+- Линия — сборка для одной версии Factorio: **Paranoidal 2.1** (`pre_release_2.1`; Factorio 2.1.x не ниже
+  `base >= …` из zzzparanoidal установленной сборки, иначе последней на GitHub, иначе 2.1.24; дополнения space-age,
+  quality, elevated-rails, recycler; в `mod-list.json` recycler включается) и **Paranoidal 2.0** (`pre_release_2.0`;
+  ровно 2.0.77). Линия хранится в `settings.ini` (`line=2.1|2.0`); ветку и правила знает exe.
+- Решения владельца (2026-11-04): новые игроки ставят 2.1, как будто 2.0 нет; линию 2.0 получает тот, у кого в папке
+  mods лежит сборка для 2.0 (установленная лаунчером или скопированная) — так лаунчеры 1.2.0 и старше переходят на
+  1.3.0. Линия 2.0 поддерживается, пока команда не решит удалить всё, что связано с 2.0. Резервной копии сейвов нет.
+- Новая версия сборки требует более новую игру — строка в журнале и вопрос перед обновлением.
+- **«Paranoidal 2.1»** (кнопка у линии 2.0): найденные установки 2.1 или любая папка → план с предупреждениями
+  (необратимость; что удалится из папки 2.0; что уже есть в папке 2.1) → после «Перенести на 2.1» **перемещение**:
+  - сейвы, `scenarios`, `script-output`, `player-data.json`, `blueprint-storage*.dat`, `achievements*.dat`,
+    `server-*.json` — в папку данных игры 2.1 (если она другая); занятое имя сейва получает « (2.0)»;
+  - `config.ini` игры 2.0 копируется (оригинал остаётся у игры 2.0) с секцией `[path]` игры 2.1; если у 2.1 его ещё
+    нет, `[path]` убирается, и игра пишет свои пути сама;
+  - папка `mods` с `.paranoidal-git` (моды игрока — как есть) — в `<папка 2.1>\mods`; своя папка модов вне папки игры
+    остаётся на месте;
+  - лаунчер, `ParanoidalLauncher-data` (с MinGit), гайд — в папку 2.1; ярлыки ведут туда;
+  - то, что в папке 2.1 уже есть, не перезаписывается: остаётся рядом как `*.before-paranoidal`;
+  - удаляются: кэш загрузки 2.0 (`atlas-cache.dat`, `data-cache.dat`, `crop-cache.dat`, `temp`), откат 2.0,
+    `kept-extras.txt`, `played-commit`, `config.ini.paranoidal-backup`, `ParanoidalLauncher.exe.old/.new`; старый exe
+    удаляет уже новый лаунчер (`--moved-from`). В папке 2.0 остаются файлы игры, её `config.ini` и логи.
+- Затем лаунчер из папки 2.1 (`--moved-from … --migrated`) сразу обновляет сборку: скачивается только разница
+  (2026-11-04: 970 файлов, 13 МБ), откат на 2.0 не сохраняется, вопрос о модах игрока задаётся заново.
+- На другой диск папки копируются в `*.partial`, помечаются, переименовываются и только потом удаляются со старого
+  места. План с отметками сделанных шагов лежит в `<папка 2.1>\ParanoidalLauncher-migration.txt`, пока переезд
+  идёт; прерванный переезд продолжает старый лаунчер (`settings.ini`: `migrating=<папка 2.1>`) или новый (план рядом с exe).
+- Игра в папке линии 2.0 сама стала 2.1 (Steam) или через «Выбрать…» указана Factorio 2.1 — тот же переезд без
+  переноса файлов: сбрасываются откат, «Не менять версию», ответы «Оставить», `line=2.1`.
+- Почему необратимо: сейв из 2.1 не открывается в 2.0, а `mod-settings.dat`, записанный 2.1, 2.0.77 не читает
+  (проверено 2026-11-04: «Failed to read mod settings: Map version 2.1.24-1 cannot be loaded because it is higher
+  than the game version»).
+- «Скопировать версию» пишет линию: «Paranoidal 2.1, сборка от …». «Версия хоста…» с хостом другой линии (по строке
+  или по zzzparanoidal его коммита) сборку не меняет и объясняет, кому переходить.
 
 ## Гайд по сборке (`src/Guide.cs`)
 
@@ -116,7 +161,8 @@ https://github.com/FactorioParanoidal/paranoidal-launcher/releases/latest/downlo
 - `tools\build-harness.ps1` → `obj\Harness.exe` — консольный прогон движка без окна (команды — в начале
   `tools\Harness.cs`): обновление, `--verify`, `--status`, `--rollback`, `--played`, `--info`, коммит как цель,
   `--loaddiag`, `--report`, `--parse-host`, `--paths`, `--releases`, `--guide`, `--download-launcher`, `--swap`,
-  `--relocate`, `--cleanup-old`, `--shortcuts`, `--detect-all`.
+  `--relocate`, `--cleanup-old`, `--shortcuts`, `--detect-all`, `--prepare-play`, `--line=2.0|2.1`, `--migrate`,
+  `--migrate-resume`, `--merge-config`.
   `--loaddiag-selftest tools\testdata\load-logs-2.0.77.zip` должен печатать `SELFTEST OK`.
 - `tools\build-uishot.ps1` → `obj\UiShot.exe <папка> <ru|en> [папкаFactorio|-] [release.json]` рисует диалоги и
   главное окно в PNG через `PrintWindow`: окно за пределами экрана, без активации (фокус не отнимается).
@@ -128,18 +174,23 @@ https://github.com/FactorioParanoidal/paranoidal-launcher/releases/latest/downlo
   `PARANOIDAL_LAUNCHER_TEST_SHORTCUTS=<папка>` — ярлыки туда, а не на рабочий стол;
   `PARANOIDAL_LAUNCHER_TEST_AUTO=<файл>` — окно вне экрана без активации, ответ «да» на самообновление и переезд,
   журнал дописывается в файл, закрытие после проверки (сквозные тесты перезапуска);
-  `PARANOIDAL_LAUNCHER_NO_RELOCATE=1` — без переезда. Точные копии версий
+  `PARANOIDAL_LAUNCHER_NO_RELOCATE=1` — без переезда;
+  `PARANOIDAL_LAUNCHER_TEST_APPDATA=<папка>` — вместо `%APPDATA%\Factorio` (системная папка данных игры);
+  `PARANOIDAL_LAUNCHER_TEST_MIGRATE=<папка 2.1>` — с `TEST_AUTO` переезд туда после первой проверки (без диалогов);
+  `PARANOIDAL_LAUNCHER_TEST_MIGRATE_STOP=n` — остановить переезд после n шагов (обрыв). В тестовом режиме
+  диалоги не показываются (ответ «да», на «Лишние моды» — «Оставить»), второй запуск только отправляет сигнал. Точные копии версий
   сборки для стенда: `git archive <коммит> mods | tar -x` из клона репозитория сборки.
 
 ## Где что лежит
 
 - Данные лаунчера — в `ParanoidalLauncher-data` рядом с exe (`AppInfo.DataDir`). Если туда писать нельзя или exe
   лежит в папке модов — в `%LOCALAPPDATA%\ParanoidalUpdater`, причина пишется в журнал.
-- `settings.ini`: `factorio`, `mods` (пути внутри папки exe хранятся относительными), `game-cache`, `pin`
-  («Не менять версию»), `lang`, `launch-build`, `launch-build-prev`, `load-diag-key`.
+- `settings.ini`: `factorio`, `mods` (пути внутри папки exe хранятся относительными), `line` (линия сборки),
+  `game-cache`, `pin` («Не менять версию»), `lang`, `launch-build`, `launch-build-prev`, `load-diag-key`,
+  `migrating` (папка 2.1, пока идёт переезд).
 - Там же `sync-log.txt`, `crash.txt`, `commits-cache.txt` (список изменений для офлайна), `load-diagnostics.txt`.
 - Рядом с exe: `Guide_to_the_Paranoidal.html` (гайд), на время обновления — `ParanoidalLauncher.exe.new`/`.old` и
-  `*.download`; лаунчер удаляет их сам.
+  `*.download`; лаунчер удаляет их сам. На время переезда на 2.1 — `ParanoidalLauncher-migration.txt` в папке 2.1.
 
 ## Язык
 
@@ -160,7 +211,13 @@ https://github.com/FactorioParanoidal/paranoidal-launcher/releases/latest/downlo
 - Особенность git: в таком клоне `git reset <коммит>` читает объекты файлов, которых нет. Поэтому
   `SyncEngine.ResetIndex` при ошибке пересоздаёт индекс. `read-tree` не подходит: он теряет sparse checkout.
 - Git никогда не трогает `mod-list.json`, `mod-settings.dat`, zip-моды и моды, которые игрок решил оставить.
-  В `mod-list.json` лаунчер меняет только дополнения: quality и elevated-rails включены, space-age выключен.
+  В `mod-list.json` лаунчер меняет только дополнения: quality и elevated-rails (у 2.1 и recycler) включены, space-age
+  выключен.
+- Лишнее в `mods` (`SyncEngine.HandleExtras`): вопрос «Лишние моды» — только про файлы игрока. Папки, которые убрала
+  или переименовала сама сборка (есть в установленной версии, нет в новой), удаляет обновление без вопроса и сохраняет
+  для отката. Папка с именем мода любой известной лаунчеру версии сборки (хвост прошлых обновлений, прежний ответ
+  «Оставить») удаляется без вопроса; имена кэшируются в `.paranoidal-git\known-mods.txt`. Zip мода, который есть в
+  сборке, удаляется, как и раньше.
 
 ## Распознавание сборки (`src/Recognize.cs`)
 
@@ -213,7 +270,7 @@ https://github.com/FactorioParanoidal/paranoidal-launcher/releases/latest/downlo
   сама (по `config-path.cfg`, иначе `%APPDATA%\Factorio`).
 - Меняются только эти ключи, остальной файл как был; копия до первой правки — `config.ini.paranoidal-backup`. Пока
   игра запущена, файл не трогается (она перезаписывает его при выходе).
-- Моды с зависимостью `~` не дают Factorio 2.0.77 использовать кэш данных — лаунчер предупреждает о них.
+- Моды с зависимостью `~` не дают Factorio 2.0.77 и 2.1.24 использовать кэш данных — лаунчер предупреждает о них.
 
 ## Лицензия
 

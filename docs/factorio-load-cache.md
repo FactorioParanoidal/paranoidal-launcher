@@ -2,7 +2,7 @@
 
 Knowledge base for the launcher's load diagnostics (`src/LoadDiag.cs`) and the «Кэш загрузки игры» option
 (`src/GameConfig.cs`). Measured on 2026-10-21/22 with the real modpack; the numbers below are facts of those runs, not
-guesses. Re-measure when the game version changes (`AppInfo.RequiredFactorio`).
+guesses. Re-measure when the game version changes (`BuildLine.DefaultMin` in `src/Lines.cs`); 2.1.24: the section below.
 
 ## Sources
 
@@ -73,6 +73,24 @@ The game rewrote neither `mod-settings.dat` nor `config.ini` on exit in these ru
 Not measured: switching back to the first installation (expected another miss: one `data-cache.dat` per write-data),
 Steam, `texture-streaming` (on in the user's config, off on the stand), other `Rebuilding … because …` reasons, a launch
 interrupted during loading, a headless run between two GUI runs (then `factorio-previous.log` is the headless one).
+
+## Factorio 2.1.24 (2026-11-04)
+
+Not a full re-measurement; what was checked and how:
+
+- **The `~` bug is still there.** Isolated headless runs of the vanilla game (own `--config` and write-data, base +
+  elevated-rails + quality + recycler, one empty probe mod, `--create` twice per case, each run under 3 s): with the
+  dependency `base` the second run says `Data stage cache loaded in: …`; with `~ base` the second run says
+  `Data stage cache not used.` again. Workspace run folder `test-runs/launcher130-engine-20261104` (`run-output.txt`,
+  `e1-*/run-*.log`, script `tools/run.py`). Headless runs use the data cache like GUI runs do.
+- **Log markers.** The binary has every string the launcher reads, and two real GUI starts of the full 2.1 build
+  (the owner's own 2.1 profile, logs read only) show them unchanged: `Data stage cache not used.`,
+  `Data stage cached in: X seconds.`, `Crop bitmaps.`, `Atlases were not loaded from disk cache.`,
+  `Atlas cache saved in X seconds.` (cold, 97 s to the menu), then `Data stage cache loaded in: X seconds.`,
+  `Atlases loaded from disk cache in X seconds.` (warm, 24 s); `Checksum of <mod>: N`, `Write data path:`,
+  `Binaries path:`, `Graphics options:` as in 2.0.77. One difference seen once: the start right after `Crop bitmaps.`
+  loaded the atlas from the cache (2.0.77 always built it once more); the launcher reports either case correctly.
+- Not measured on 2.1: the settings-change and mod-change rows of the table above, `graphics-quality` values.
 
 ## The `~` dependency bug
 

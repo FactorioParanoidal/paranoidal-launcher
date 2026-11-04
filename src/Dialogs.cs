@@ -278,6 +278,152 @@ namespace Paranoidal
             return result;
         }
 
+        /// <summary>
+        /// «Paranoidal 2.1»: the folder of the 2.1 game, from the installations found or chosen by hand. Returns the folder
+        /// (checked by the caller); null: cancelled.
+        /// </summary>
+        public static string ChooseMigrationTarget(IWin32Window owner, List<FactorioInfo> list)
+        {
+            Func<float, int> S = Theme.S;
+            var l = Lines.L21;
+            var fr = Open("Paranoidal 2.1", Tr.T("Укажите папку Factorio 2.1", "Choose the Factorio 2.1 folder"),
+                Tr.T("Лаунчер перенесёт в неё сейвы, сборку, настройки и себя, а потом докачает только то, чем сборка 2.1 отличается от вашей. " +
+                     "Перед переездом он покажет, что именно и куда перенесёт.\nНужна Factorio " + l.VersionWords(false) +
+                     " с дополнением Space Age (space-age, quality, elevated-rails, recycler).",
+                     "The launcher moves the saves, the build, the settings and itself there, then downloads only what the 2.1 build changes. " +
+                     "Before the move it shows what goes where.\nIt needs Factorio " + l.VersionWords(true) +
+                     " with the Space Age expansion (space-age, quality, elevated-rails, recycler)."), 660);
+            var radios = new List<RadioButton>();
+            if (list.Count == 0)
+                AddText(fr, Tr.T("Подходящая Factorio 2.1 не найдена — укажите её папку сами.\n", "No suitable Factorio 2.1 was found: choose its folder yourself.\n") +
+                    FactorioInfo.HowToGet21(), Theme.Orange);
+            foreach (var f in list)
+            {
+                var rb = Styled(new RadioButton { Text = f.Dir + "  —  " + f.Describe(null, l), Checked = radios.Count == 0 });
+                rb.Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, S(26));
+                fr.F.Controls.Add(rb);
+                radios.Add(rb);
+                fr.Y += S(27);
+            }
+            fr.Y += S(8);
+            string result = null;
+            Action browse = () =>
+            {
+                using (var dlg = new FolderBrowserDialog
+                {
+                    Description = Tr.T("Папка Factorio 2.1 (в ней есть bin\\x64\\factorio.exe)", "The Factorio 2.1 folder (it has bin\\x64\\factorio.exe)"),
+                    ShowNewFolderButton = false,
+                })
+                {
+                    if (dlg.ShowDialog(fr.F) != DialogResult.OK) return;
+                    result = dlg.SelectedPath;
+                    fr.F.DialogResult = DialogResult.OK;
+                    fr.F.Close();
+                }
+            };
+            int by = fr.Y;
+            var ok = Buttons(fr, list.Count > 0 ? Tr.T("Далее", "Next") : Tr.T("Выбрать папку…", "Choose a folder…"));
+            ok.Click += (s, e) =>
+            {
+                if (list.Count == 0) { browse(); return; }
+                int i = radios.FindIndex(r => r.Checked);
+                if (i < 0) return;
+                result = list[i].Dir;
+                fr.F.DialogResult = DialogResult.OK;
+                fr.F.Close();
+            };
+            if (list.Count > 0)
+            {
+                var other = new FButton(Tr.T("Другая папка…", "Another folder…"), ButtonKind.Normal) { Bounds = new Rectangle(fr.Pad, by, S(150), S(38)) };
+                other.Click += (s, e) => browse();
+                fr.F.Controls.Add(other);
+            }
+            Show(fr.F, owner);
+            fr.F.Dispose();
+            return result;
+        }
+
+        /// <summary>The move to Paranoidal 2.1: what moves where, what is deleted, that there is no way back. True: move.</summary>
+        public static bool ConfirmMigration(IWin32Window owner, MigrationPlan p)
+        {
+            Func<float, int> S = Theme.S;
+            var sb = new System.Text.StringBuilder();
+            Func<string, string, string> T = Tr.T;
+            if (p.InPlace)
+                sb.Append(T("Игра в папке ", "The game in ")).Append(p.NewDir).Append(T(" уже версии ", " is version ")).Append(p.NewVersion)
+                  .Append(T(". Файлы не переносятся: лаунчер переключит сборку на 2.1 и докачает только разницу.",
+                               " already. Nothing is moved: the launcher switches the build to 2.1 and downloads only the difference."));
+            else
+            {
+                sb.Append(T("Из: ", "From: ")).Append(p.OldDir).Append('\n').Append(T("В:   ", "To:   ")).Append(p.NewDir).Append("\n\n");
+                sb.Append(T("Переедут (перемещением, без копий):", "What moves (moved, not copied):")).Append('\n');
+                if (p.SharedWd)
+                    sb.Append(T("• сейвы, чертежи и настройки игры переносить не нужно: обе игры пользуются одной папкой ", "• saves, blueprints and game settings stay: both games use one folder ")).Append(p.NewWd).Append('\n');
+                else
+                {
+                    sb.Append(T("• сейвы: ", "• saves: ")).Append(p.Saves).Append(p.Saves > 0 ? " (" + Fmt.Size(p.SavesBytes) + ")" : "").Append(" → ").Append(Path.Combine(p.NewWd, "saves")).Append('\n');
+                    if (p.PlayerItems.Count > 0) sb.Append("• ").Append(string.Join(", ", p.PlayerItems)).Append(" → ").Append(p.NewWd).Append('\n');
+                    if (p.Steps.Any(s => s.Kind == "config"))
+                        sb.Append(T("• настройки игры (графика, клавиши): копия config.ini игры 2.0 → ", "• game settings (graphics, controls): a copy of the 2.0 config.ini → "))
+                          .Append(p.NewCfg).Append(T(", пути — от игры 2.1", ", paths of the 2.1 game")).Append('\n');
+                }
+                if (p.ModsStay)
+                    sb.Append(T("• своя папка модов ", "• your own mods folder ")).Append(p.ModsDir).Append(T(" остаётся на месте и переходит на 2.1", " stays where it is and switches to 2.1")).Append('\n');
+                else
+                    sb.Append(T("• сборка и ваши моды (", "• the build and your mods (")).Append(Fmt.Size(p.ModsBytes)).Append(") → ").Append(p.NewMods)
+                      .Append(T(", потом докачается только разница со сборкой 2.1", ", then only the difference to the 2.1 build is downloaded")).Append('\n');
+                sb.Append(T("• лаунчер, его данные и гайд → ", "• the launcher, its data and the guide → ")).Append(p.NewDir).Append(T("; ярлыки будут вести туда", "; the shortcuts will point there"));
+            }
+            if (p.Foreign.Count > 0)
+                sb.Append("\n\n").Append(T("Моды не из сборки (", "Mods not from the build (")).Append(p.Foreign.Count).Append("): ")
+                  .Append(string.Join(", ", p.Foreign.Take(12))).Append(p.Foreign.Count > 12 ? " …" : "")
+                  .Append(p.InPlace ? T(" — останутся как есть", ": they stay as they are") : T(" — переедут как есть", ": they move as they are"))
+                  .Append(T("; при обновлении лаунчер спросит, оставить ли их: многие моды для 2.0 в 2.1 не загрузятся.",
+                             "; the update asks whether to keep them, many mods for 2.0 do not load in 2.1."));
+            var fr = Open(T("Переезд на Paranoidal 2.1", "Moving to Paranoidal 2.1"),
+                p.InPlace ? T("Перейти на Paranoidal 2.1?", "Switch to Paranoidal 2.1?")
+                          : T("Перенести сейвы, сборку и настройки в Factorio ", "Move the saves, the build and the settings to Factorio ") + p.NewVersion + "?",
+                sb.ToString(), 760);
+            AddText(fr, T("⚠ Переезд необратим. Сейв, сохранённый в 2.1, в Factorio 2.0 не откроется, а настройки модов (mod-settings.dat) после 2.1 игра 2.0 не прочитает. " +
+                            "Вернуться на Paranoidal 2.0 этим лаунчером нельзя. Играйте на сервере? Переезжайте вместе с хостом.",
+                            "⚠ The move cannot be undone. A save made in 2.1 does not open in Factorio 2.0, and the 2.0 game cannot read the mod settings (mod-settings.dat) after 2.1. " +
+                            "This launcher cannot go back to Paranoidal 2.0. Playing on a server? Move together with the host."), Theme.Red);
+            string removed;
+            if (p.InPlace)
+                removed = T("⚠ Сбрасываются: откат сборки 2.0, «Не менять версию» и ответы «Оставить» про лишние моды.",
+                            "⚠ Reset: the 2.0 build rollback, \"Keep this version\" and the \"Keep\" answers about extra mods.");
+            else
+                removed = T("⚠ Из папки 2.0 удалится всё, что принёс лаунчер: сам лаунчер, его данные (в том числе откат сборки 2.0), гайд, ответы «Оставить» про лишние моды",
+                            "⚠ Everything the launcher brought is removed from the 2.0 folder: the launcher, its data (with the 2.0 build rollback), the guide, the \"Keep\" answers about extra mods") +
+                    (p.CacheItems.Count > 0 ? T(" и кэш загрузки игры 2.0 (", " and the load cache of the 2.0 game (") + string.Join(", ", p.CacheItems) + " — " + Fmt.Size(p.CacheBytes) + ")" : "") +
+                    T(". В папке 2.0 останутся файлы игры, её config.ini и логи.", ". The 2.0 folder keeps the game files, its config.ini and logs.");
+            AddText(fr, removed, Theme.Orange);
+            if (p.Asides.Count > 0)
+                AddText(fr, T("Уже есть в папке 2.1 и не будет перезаписано, а останется рядом под другим именем: ", "Already in the 2.1 folder and not overwritten, kept next to it under another name: ") +
+                    string.Join("; ", p.Asides), Theme.Muted);
+            var box = new RichTextBox
+            {
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None,
+                BackColor = Theme.Inset,
+                ForeColor = Theme.Text,
+                Font = new Font("Consolas", 8.5f),
+                WordWrap = false,
+                DetectUrls = false,
+                Bounds = new Rectangle(fr.Pad, fr.Y, fr.Width - 2 * fr.Pad, S(130)),
+                Text = string.Join("\n", p.Steps.Select(s => Migration.Describe(s, Tr.En))),
+            };
+            Native.DarkScrollbars(box);
+            fr.F.Controls.Add(box);
+            fr.Y += S(130) + S(12);
+            var ok = Buttons(fr, p.InPlace ? T("Перейти на 2.1", "Switch to 2.1") : T("Перенести на 2.1", "Move to 2.1"));
+            bool result = false;
+            ok.Click += (s, e) => { result = true; fr.F.DialogResult = DialogResult.OK; fr.F.Close(); };
+            Show(fr.F, owner);
+            fr.F.Dispose();
+            return result;
+        }
+
         /// <summary>The host's version line. Null: cancelled.</summary>
         public static string AskHostLine(IWin32Window owner)
         {

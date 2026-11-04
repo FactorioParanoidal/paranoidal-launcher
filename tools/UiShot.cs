@@ -66,17 +66,67 @@ namespace Paranoidal
                 new FactorioInfo { Dir = @"C:\Games\Factorio 2.0.77", Version = "2.0.77" },
                 new FactorioInfo { Dir = @"D:\SteamLibrary\steamapps\common\Factorio", Version = "2.0.77" },
             });
-            var main = new MainForm();
-            var t = typeof(MainForm);
-            var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
-            t.GetMethod("AppendLog", flags).Invoke(main, new object[] { "Готово. Моды соответствуют последней версии сборки", LogKind.Ok });
-            t.GetMethod("AppendLogHighlight", flags).Invoke(main, new object[] { "Обновился гайд по сборке Paranoidal: версия 1.3.4 — C:\\Games\\Factorio\\Guide_to_the_Paranoidal.html" });
-            t.GetMethod("AppendLog", flags).Invoke(main, new object[] { "Следующая обычная строка журнала.", LogKind.Info });
-            t.GetMethod("SelectTab", flags).Invoke(main, new object[] { 2 });
-            Snap(main, Path.Combine(a[0], "main-" + a[1] + ".png"));
-            main.ClientSize = new Size(Theme.S(900), Theme.S(740));
-            Snap(main, Path.Combine(a[0], "main-min-" + a[1] + ".png"));
+            // 1.3.0: the move to 2.1 (choice of the folder: found ones / none found; the confirmation: a move / in place)
+            var g21 = new System.Collections.Generic.List<FactorioInfo>
+            {
+                new FactorioInfo { Dir = @"C:\Games\Factorio 2.1.24", Version = "2.1.24" }.WithAllDlc(),
+                new FactorioInfo { Dir = @"D:\SteamLibrary\steamapps\common\Factorio", Version = "2.1.25" }.WithAllDlc(),
+            };
+            Dialogs.ChooseMigrationTarget(null, g21);
+            Dialogs.ChooseMigrationTarget(null, new System.Collections.Generic.List<FactorioInfo>());
+            Dialogs.ConfirmMigration(null, SamplePlan(false));
+            Dialogs.ConfirmMigration(null, SamplePlan(true));
+            foreach (var line in new[] { Lines.L20, Lines.L21 })
+            {
+                Lines.Set(line);
+                var main = new MainForm();
+                var t = typeof(MainForm);
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                t.GetMethod("AppendLog", flags).Invoke(main, new object[] { "Готово. Моды соответствуют последней версии сборки", LogKind.Ok });
+                t.GetMethod("AppendLogHighlight", flags).Invoke(main, new object[] { "Обновился гайд по сборке Paranoidal: версия 1.3.4 — C:\\Games\\Factorio\\Guide_to_the_Paranoidal.html" });
+                t.GetMethod("AppendLog", flags).Invoke(main, new object[] { "Следующая обычная строка журнала.", LogKind.Info });
+                t.GetMethod("SelectTab", flags).Invoke(main, new object[] { 2 });
+                ((FButton)t.GetField("btn21", flags).GetValue(main)).Enabled = true;   // enabled once the engine is up
+                var id = line.Id.Replace(".", "");
+                Snap(main, Path.Combine(a[0], "main-" + id + "-" + a[1] + ".png"));
+                main.ClientSize = new Size(Theme.S(900), Theme.S(740));
+                Snap(main, Path.Combine(a[0], "main-min-" + id + "-" + a[1] + ".png"));
+                main.Dispose();
+            }
             return 0;
+        }
+
+        /// <summary>A plan as a player with a typical game folder would see it (only for the picture; nothing is planned).</summary>
+        static MigrationPlan SamplePlan(bool inPlace)
+        {
+            var p = new MigrationPlan
+            {
+                OldDir = @"C:\Games\Factorio 2.0.77", NewDir = inPlace ? @"C:\Games\Factorio 2.0.77" : @"C:\Games\Factorio 2.1.24", NewVersion = "2.1.24",
+                InPlace = inPlace, SharedWd = inPlace, ModsStay = inPlace,
+            };
+            p.OldWd = p.OldDir; p.NewWd = p.NewDir; p.NewCfg = p.NewDir + @"\config\config.ini";
+            p.ModsDir = p.OldDir + @"\mods"; p.NewMods = p.NewDir + @"\mods";
+            p.Saves = 37; p.SavesBytes = 2300L * 1024 * 1024; p.ModsBytes = 1100L * 1024 * 1024; p.CacheBytes = 1080L * 1024 * 1024;
+            if (!inPlace)
+            {
+                p.PlayerItems.AddRange(new[] { "script-output (4)", "achievements-modded.dat", "blueprint-storage-2.dat", "player-data.json" });
+                p.CacheItems.AddRange(new[] { "atlas-cache.dat", "data-cache.dat", "crop-cache.dat", "temp" });
+                p.Asides.Add(p.NewDir + @"\mods → mods.before-paranoidal");
+                p.Steps.Add(new MigStep { Kind = "move", Src = p.OldDir + @"\saves\base.zip", Dst = p.NewDir + @"\saves\base.zip" });
+                p.Steps.Add(new MigStep { Kind = "config", Src = p.OldDir + @"\config\config.ini", Dst = p.NewCfg });
+                p.Steps.Add(new MigStep { Kind = "move", Src = p.ModsDir, Dst = p.NewMods });
+                p.Steps.Add(new MigStep { Kind = "delete", Src = p.OldDir + @"\atlas-cache.dat" });
+                p.Steps.Add(new MigStep { Kind = "exe", Src = p.OldDir + @"\ParanoidalLauncher.exe", Dst = p.NewDir });
+                p.Steps.Add(new MigStep { Kind = "move", Src = p.OldDir + @"\ParanoidalLauncher-data", Dst = p.NewDir + @"\ParanoidalLauncher-data" });
+                p.Steps.Add(new MigStep { Kind = "shortcuts", Src = p.OldDir + @"\ParanoidalLauncher.exe", Dst = p.NewDir + @"\ParanoidalLauncher.exe" });
+            }
+            else
+            {
+                p.Steps.Add(new MigStep { Kind = "delete", Src = p.OldDir + @"\.paranoidal-git\rollback" });
+                p.Steps.Add(new MigStep { Kind = "settings", Src = p.OldDir + @"\ParanoidalLauncher-data" });
+            }
+            p.Foreign.AddRange(new[] { "even-distribution_2.0.2.zip", "my-own-mod", "squeak-through-2_0.1.4.zip" });
+            return p;
         }
     }
 }

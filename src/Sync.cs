@@ -68,6 +68,8 @@ namespace Paranoidal
         public int Modified = -1;
         /// <summary>What is in mods\ when the installed version is unknown or the files differ from it.</summary>
         public BuildFound Found;
+        /// <summary>zzzparanoidal of the build on disk, read on every check: its line and the game version it needs.</summary>
+        public BuildFound Disk;
         /// <summary>The installed version was recognised in this check (files match a known version).</summary>
         public string AdoptedFrom;
         public bool Adopted;
@@ -228,6 +230,7 @@ namespace Paranoidal
             if (modsDir != null && SyncPaths.Validate(modsDir) == null)
             {
                 p = new SyncPaths(modsDir);
+                st.Disk = BuildFound.Scan(p.Mods);
                 var synced = p.ReadSynced();
                 if (synced != null && File.Exists(Path.Combine(p.GitDir, "HEAD")))
                 {
@@ -245,8 +248,9 @@ namespace Paranoidal
                 // the version is unknown or the files were changed outside the launcher: recognise what is there
                 if (st.Installed == null || st.Modified > 0)
                 {
-                    st.Found = BuildFound.Scan(p.Mods);
-                    if (st.Found.Present && !st.Found.Legacy) local = Recognize(p, st);
+                    st.Found = st.Disk;
+                    // a build of another line (2.0 on the 2.1 line) is not one of the versions this line can adopt
+                    if (st.Found.Present && !st.Found.Legacy && !st.Found.OtherLine) local = Recognize(p, st);
                 }
             }
 
@@ -368,6 +372,17 @@ namespace Paranoidal
             var OLD = p.ReadSynced();
             if (OLD != null && !CommitExists(OLD)) OLD = null;
 
+            // the build moves to the launcher's line (2.0 -> 2.1): no rollback across the line, «Оставить» answers start over
+            var disk = BuildFound.Scan(p.Mods);
+            bool crossLine = !verify && disk.OtherLine;
+            if (crossLine)
+            {
+                ui.Log("Сборка переходит с Factorio " + disk.FactorioVersion + " на " + Lines.Current.Name + ": откат на старую линию не сохраняется, " +
+                    "ответы «Оставить» про лишние моды сброшены.", LogKind.Info);
+                DropRollback(p);
+                try { if (File.Exists(KeptFile(p))) File.Delete(KeptFile(p)); } catch { }
+            }
+
             string NEW;
             if (verify && OLD != null)
             {
@@ -383,8 +398,8 @@ namespace Paranoidal
                 if (!Regex.IsMatch(NEW, "^[0-9a-f]{40}$")) throw new SyncException("Не удалось определить коммит сборки.", "Could not determine the build commit.");
             }
 
-            // mods that are not in the build: ask before anything is downloaded
-            HandleExtras(p, TopLevel(NEW));
+            // mods that are not in the build: ask before anything is downloaded (only about the player's own files)
+            HandleExtras(p, TopLevel(NEW), OLD != null ? TopLevel(OLD) : null);
 
             // Full byte-for-byte check: first sync, «Проверить файлы», and a missing index (e.g. a check interrupted right
             // after the index was dropped; without an index every file would look deleted and be downloaded again).
@@ -490,7 +505,7 @@ namespace Paranoidal
 
             // the files this version change replaces are kept for a rollback without internet (Rollback.cs)
             RollbackSlot slot = null;
-            if (!verify && OLD != null && OLD != NEW && !fullCheck)
+            if (!verify && OLD != null && OLD != NEW && !fullCheck && !crossLine)
             {
                 git.Env.Remove("GIT_OBJECT_DIRECTORY");
                 git.Env.Remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
@@ -665,11 +680,76 @@ namespace Paranoidal
 
         static readonly Regex ZipName = new Regex(@"^(?<n>.+?)(_\d+\.\d+\.\d+)?\.zip$", RegexOptions.IgnoreCase);
 
+        static string KnownNamesFile(SyncPaths p) => Path.Combine(p.GitDir, "known-mods.txt");
+
+        /// <summary>Changes when git gets new packs (every fetch writes one: transfer.unpackLimit=1); null: no packs.</summary>
+        static string PackKey(SyncPaths p)
+        {
+            try
+            {
+                var dir = Path.Combine(p.GitDir, "objects", "pack");
+                if (!Directory.Exists(dir)) return null;
+                var sb = new StringBuilder();
+                foreach (var f in Directory.GetFiles(dir, "*.pack").OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                    sb.Append(Path.GetFileName(f)).Append(':').Append(new FileInfo(f).Length).Append(';');
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                    return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()))).Replace("-", "").Substring(0, 16);
+            }
+            catch { return null; }
+        }
+
         /// <summary>
-        /// Top-level entries of mods\ that are not in the build. A zip of a mod that is in the build is removed without
-        /// questions (Factorio would see the mod twice); the rest is offered for deletion, refused ones are kept as is.
+        /// Top-level names in mods\ of every build version known locally (the installed ones and the history fetched for
+        /// recognition): a folder with such a name came with the build, not from the player. Cached in known-mods.txt
+        /// until git gets new packs.
         /// </summary>
-        void HandleExtras(SyncPaths p, HashSet<string> buildMods)
+        HashSet<string> KnownBuildNames(SyncPaths p)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var key = PackKey(p);
+            try
+            {
+                var file = KnownNamesFile(p);
+                if (key != null && File.Exists(file))
+                {
+                    var lines = File.ReadAllLines(file, Encoding.UTF8);
+                    if (lines.Length > 0 && lines[0] == key)
+                    {
+                        foreach (var l in lines.Skip(1)) if (l.Length > 0) set.Add(l);
+                        return set;
+                    }
+                }
+            }
+            catch { }
+            var commits = LocalCommits();
+            if (commits.Count == 0) return set;
+            var check = git.Run(new[] { "cat-file", "--batch-check" }, Encoding.ASCII.GetBytes(string.Join("\n", commits.Select(c => c.Key + ":mods")) + "\n"));
+            if (check.Code != 0) return set;
+            var ids = new List<string>();
+            foreach (var line in Encoding.UTF8.GetString(check.Out).Split('\n'))
+            {
+                var f = line.Trim().Split(' ');
+                if (f.Length >= 2 && f[1] == "tree") ids.Add(f[0]);
+            }
+            foreach (var t in ReadTrees(ids.Distinct().ToList()).Values)
+                foreach (var name in t.Keys) set.Add(name);
+            try
+            {
+                if (key != null)
+                    File.WriteAllLines(KnownNamesFile(p), new[] { key }.Concat(set.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)), new UTF8Encoding(false));
+            }
+            catch { }
+            return set;
+        }
+
+        /// <summary>
+        /// Top-level entries of mods\ that are not in the new build. Questions are asked only about the player's own files:
+        /// a mod folder of the installed version that the new one removed or renamed is removed by the update itself, a
+        /// folder of another known build version (left by an older update or kept by an earlier «Оставить») is deleted, a zip
+        /// of a mod that is in the build is deleted (Factorio would see the mod twice); the rest is offered for deletion,
+        /// refused ones are kept as is.
+        /// </summary>
+        void HandleExtras(SyncPaths p, HashSet<string> buildMods, HashSet<string> oldMods)
         {
             if (buildMods.Count == 0 || !Directory.Exists(p.Mods)) return;
             var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -677,6 +757,9 @@ namespace Paranoidal
             var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var kept = ReadKept(p);
             var keptSet = new HashSet<string>(kept, StringComparer.OrdinalIgnoreCase);
+            var byUpdate = new HashSet<string>(StringComparer.OrdinalIgnoreCase);   // removed from the build: the update deletes them
+            var stale = new List<string>();                                       // of an older build version: deleted now
+            HashSet<string> known = null;
             foreach (var full in Directory.GetFileSystemEntries(p.Mods))
             {
                 var name = Path.GetFileName(full);
@@ -695,11 +778,32 @@ namespace Paranoidal
                         continue;
                     }
                 }
+                else
+                {
+                    // the build's own folders are never a question (renamed or merged mods, earlier «Оставить» answers)
+                    if (oldMods != null && oldMods.Contains(name)) { byUpdate.Add(name); continue; }
+                    if (known == null) known = KnownBuildNames(p);
+                    if (known.Contains(name)) { stale.Add(name); continue; }
+                }
                 if (keptSet.Contains(name)) continue;
                 ask.Add(name);
                 if (isDir) dirs.Add(name);
             }
-            kept.RemoveAll(k => !present.Contains(k));
+            var staleSet = new HashSet<string>(stale, StringComparer.OrdinalIgnoreCase);
+            kept.RemoveAll(k => !present.Contains(k) || byUpdate.Contains(k) || staleSet.Contains(k));
+            if (byUpdate.Count > 0)
+                ui.Log("Убраны из сборки, обновление удалит их без вопросов: " + string.Join(", ", byUpdate.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)), LogKind.Muted);
+            if (stale.Count > 0)
+            {
+                stale.Sort(StringComparer.OrdinalIgnoreCase);
+                var removed = new List<string>();
+                foreach (var name in stale)
+                {
+                    try { FsUtil.DeleteDir(Path.Combine(p.Mods, name)); removed.Add(name); }
+                    catch (Exception ex) { ui.Log("Не удалось удалить " + name + ": " + ex.Message, LogKind.Warn); }
+                }
+                if (removed.Count > 0) ui.Log("Удалены папки модов, которых больше нет в сборке (остались от прошлых версий): " + string.Join(", ", removed), LogKind.Ok);
+            }
 
             if (ask.Count > 0)
             {
@@ -742,7 +846,7 @@ namespace Paranoidal
             var synced = p.ReadSynced();
             if (synced == null || !File.Exists(Path.Combine(p.GitDir, "HEAD"))) return;
             Bind(p);
-            HandleExtras(p, TopLevel(synced));
+            HandleExtras(p, TopLevel(synced), null);
         }
 
         void FetchWithRetry(string[] args, string failRu, string failEn)

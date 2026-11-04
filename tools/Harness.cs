@@ -7,6 +7,13 @@
 //     --status        CheckStatus: recognition, offline state, rollback; prints the StatusInfo
 //     --rollback      «Откатить» / «Вернуть»
 //     --played        mark the installed version as played (as «ИГРАТЬ» does) and exit
+//     --prepare-play  what «ИГРАТЬ» does before the start: DLC in mod-list.json and the question about extra mods
+//   --line=2.0|2.1    any command: the build line (branch, game, DLC) instead of settings.ini line=…
+//   Harness.exe --migrate <old factorio dir> <mods dir> <old exe> <old data dir> <new factorio dir> [--run]
+//                    the plan of the move to 2.1 (Migration.Plan); --run runs it. Needs PARANOIDAL_LAUNCHER_TEST_APPDATA and
+//                    PARANOIDAL_LAUNCHER_TEST_SHORTCUTS; PARANOIDAL_LAUNCHER_TEST_MIGRATE_STOP=n stops after n steps
+//   Harness.exe --migrate-resume <plan file>   continues an interrupted move
+//   Harness.exe --merge-config <old config.ini> <new config.ini|-> <out>   GameConfig.MergeForOtherInstall
 //   Harness.exe --loaddiag <current.log> [previous.log] [--tilde=mod1,mod2] [--build-changed]
 //   Harness.exe --loaddiag-selftest <load-logs-2.0.77.zip>    checks the verdicts on the reference logs
 //   Harness.exe --report <factorioDir> <modsDir> <out.zip> [--save=last|auto|<path>]
@@ -75,7 +82,18 @@ namespace Paranoidal
         {
             Console.OutputEncoding = Encoding.UTF8;
             System.Net.ServicePointManager.SecurityProtocol |= System.Net.SecurityProtocolType.Tls12;
-            Console.WriteLine("LAUNCHER " + AppInfo.Name + " " + AppInfo.Version + (AppInfo.TestOffline ? " (TEST OFFLINE)" : ""));
+            var lineOpt = Opt(argv, "--line");
+            if (lineOpt != null) Lines.Set(Lines.ById(lineOpt) ?? Lines.Current);
+            argv = argv.Where(x => !x.StartsWith("--line=")).ToArray();
+            Console.WriteLine("LAUNCHER " + AppInfo.Name + " " + AppInfo.Version + (AppInfo.TestOffline ? " (TEST OFFLINE)" : "") + " line=" + Lines.Current.Id + " branch=" + Lines.Current.Branch);
+            if (argv.Length > 0 && (argv[0] == "--migrate" || argv[0] == "--migrate-resume")) return MigrateTest(argv);
+            if (argv.Length > 0 && argv[0] == "--merge-config")
+            {
+                var merged = GameConfig.MergeForOtherInstall(File.ReadAllText(argv[1]), argv[2] == "-" ? null : File.ReadAllText(argv[2]));
+                File.WriteAllText(argv[3], merged, new UTF8Encoding(false));
+                Console.WriteLine("MERGED " + argv[3]);
+                return 0;
+            }
             if (argv.Length > 0 && argv[0] == "--loaddiag") return LoadDiagOne(argv);
             if (argv.Length > 0 && argv[0] == "--loaddiag-selftest") return LoadDiagSelfTest(argv[1]);
             if (argv.Length > 0 && argv[0] == "--report") return ReportTest(argv);
@@ -96,7 +114,7 @@ namespace Paranoidal
             }
 
             bool verify = argv.Contains("--verify"), info = argv.Contains("--info"), status = argv.Contains("--status"),
-                 rollback = argv.Contains("--rollback"), played = argv.Contains("--played");
+                 rollback = argv.Contains("--rollback"), played = argv.Contains("--played"), preparePlay = argv.Contains("--prepare-play");
             var a = argv.Where(x => !x.StartsWith("--")).ToArray();
             var ui = new ConsoleUi { Answer = a[2] };
             var git = new GitRunner(a[0], Path.Combine(Path.GetTempPath(), "no-global-config"));
@@ -112,6 +130,7 @@ namespace Paranoidal
                 return 0;
             }
             if (played) { eng.MarkPlayed(paths, paths.ReadSynced()); Console.WriteLine("PLAYED " + AppInfo.Short(paths.ReadSynced())); return 0; }
+            if (preparePlay) { eng.PrepareForPlay(paths); Console.WriteLine("PREPARED"); return 0; }
             var t0 = DateTime.Now;
             try
             {
@@ -122,6 +141,8 @@ namespace Paranoidal
                         " offline=" + st.Offline + " modified=" + st.Modified + " adopted=" + st.Adopted + " from=" + AppInfo.Short(st.AdoptedFrom) +
                         " rollback=" + AppInfo.Short(st.RollbackTarget) + " (" + st.RollbackDate + ", newer=" + st.RollbackIsNewer + ")" +
                         " commits=" + (st.Commits == null ? "null" : st.Commits.Count + (st.CommitsCached ? " cached" : "") + (st.CommitsAreNew ? " new" : "")));
+                    if (st.Disk != null)
+                        Console.WriteLine("DISK present=" + st.Disk.Present + " fv=" + st.Disk.FactorioVersion + " base>=" + st.Disk.BaseMin + " otherLine=" + st.Disk.OtherLine);
                     var f = st.Found;
                     if (f != null)
                         Console.WriteLine("FOUND present=" + f.Present + " fv=" + f.FactorioVersion + " zzz=" + f.ZzzVersion + " legacy=" + f.Legacy + " fp=" + f.Fingerprint +
@@ -139,6 +160,54 @@ namespace Paranoidal
             }
             catch (OperationCanceledException) { Console.WriteLine("CANCELLED after " + (int)(DateTime.Now - t0).TotalSeconds + "s"); return 2; }
             catch (Exception ex) { Console.WriteLine("ERROR " + ex.Message); return 1; }
+        }
+
+        // ------------------------------------------------------------------ the move to 2.1
+
+        static int MigrateTest(string[] a)
+        {
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_APPDATA")) ||
+                string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_SHORTCUTS")))
+            {
+                Console.WriteLine("set PARANOIDAL_LAUNCHER_TEST_APPDATA and PARANOIDAL_LAUNCHER_TEST_SHORTCUTS (the player's folders must not be touched)");
+                return 1;
+            }
+            MigrationPlan p;
+            if (a[0] == "--migrate-resume")
+            {
+                p = Migration.Load(a[1]);
+                if (p == null) { Console.WriteLine("NO PLAN " + a[1]); return 1; }
+                Console.WriteLine("RESUME done=" + p.Steps.Count(s => s.Done) + "/" + p.Steps.Count);
+            }
+            else
+            {
+                var oldFac = FactorioInfo.Inspect(a[1]);
+                var newFac = FactorioInfo.Inspect(a[5]);
+                Console.WriteLine("OLD " + (oldFac == null ? "(none)" : oldFac.Dir + " | " + oldFac.Describe(false, Lines.L20) + " ok20=" + oldFac.OkFor(Lines.L20)));
+                Console.WriteLine("NEW " + (newFac == null ? "(none)" : newFac.Dir + " | " + newFac.Describe(false) + " ok21=" + newFac.OkFor(Lines.L21) +
+                    " problem=" + (newFac.Problem(Lines.L21) ?? "-").Replace("\n", " ")));
+                if (oldFac == null || newFac == null) return 1;
+                p = Migration.Plan(oldFac, a[2], a[3], a[4], newFac, null);
+            }
+            Console.WriteLine("PLAN inPlace=" + p.InPlace + " sharedWd=" + p.SharedWd + " modsStay=" + p.ModsStay + " saves=" + p.Saves + " savesBytes=" + p.SavesBytes +
+                " modsBytes=" + p.ModsBytes + " cacheBytes=" + p.CacheBytes + " error=" + (p.Error ?? "-"));
+            Console.WriteLine("  oldWd=" + p.OldWd + " newWd=" + p.NewWd + " oldCfg=" + p.OldCfg + " newCfg=" + p.NewCfg + " newMods=" + p.NewMods + " newData=" + p.NewData);
+            foreach (var s in p.Steps) Console.WriteLine("  " + (s.Done ? "[x] " : "[ ] ") + Migration.Describe(s));
+            foreach (var s in p.Asides) Console.WriteLine("  ASIDE " + s);
+            Console.WriteLine("  PLAYER " + string.Join(", ", p.PlayerItems) + " | CACHE " + string.Join(", ", p.CacheItems));
+            if (p.Error != null || (a[0] == "--migrate" && !a.Contains("--run"))) return p.Error != null ? 1 : 0;
+            try
+            {
+                Migration.Run(p, l => Console.WriteLine("   done: " + l), (f, d) => { });
+                Migration.Finish(p);
+                Console.WriteLine("MIGRATED all steps done, plan file removed=" + !File.Exists(p.PlanFile));
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("STOPPED " + ex.Message + " | plan file kept=" + File.Exists(p.PlanFile) + " done=" + p.Steps.Count(s => s.Done) + "/" + p.Steps.Count);
+                return 2;
+            }
         }
 
         // ------------------------------------------------------------------ releases, guide, self-update, relocation

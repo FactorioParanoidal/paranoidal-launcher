@@ -110,6 +110,42 @@ namespace Paranoidal
         }
     }
 
+    /// <summary>
+    /// zzzparanoidal/info.json of a build version on GitHub (a branch or a commit): which Factorio it is for and which
+    /// game version it needs. One small file from raw.githubusercontent.com: not a REST call, the API limit is not spent.
+    /// </summary>
+    static class RemoteBuild
+    {
+        public static string Url(string reference) =>
+            "https://raw.githubusercontent.com/" + AppInfo.Owner + "/" + AppInfo.RepoName + "/" + Uri.EscapeDataString(reference) + "/mods/zzzparanoidal/info.json";
+
+        /// <summary>Null without a connection or when the file is not there; never throws.</summary>
+        public static BuildFound Info(string reference, int timeoutMs = 10000)
+        {
+            if (AppInfo.TestOffline || string.IsNullOrEmpty(reference)) return null;
+            try
+            {
+                var req = (HttpWebRequest)WebRequest.Create(Url(reference));
+                req.UserAgent = "ParanoidalLauncher/" + AppInfo.Version;
+                req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+                req.Timeout = timeoutMs;
+                req.ReadWriteTimeout = timeoutMs;
+                string text;
+                using (var resp = (HttpWebResponse)req.GetResponse())
+                using (var r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                {
+                    var buf = new char[64 * 1024];   // info.json is ~1 KB; never read an endless answer
+                    int n = r.ReadBlock(buf, 0, buf.Length);
+                    text = new string(buf, 0, n);
+                }
+                var f = new BuildFound { Present = true };
+                BuildFound.Parse(text, f);
+                return f.FactorioVersion == null ? null : f;
+            }
+            catch { return null; }
+        }
+    }
+
     /// <summary>The last list of build changes, shown when GitHub cannot be reached.</summary>
     static class CommitsCache
     {

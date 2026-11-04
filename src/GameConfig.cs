@@ -25,6 +25,78 @@ namespace Paranoidal
             new[] { "graphics", "compress-sprite-atlas-cache" },
         };
 
+        /// <summary>
+        /// The game's system data folder %APPDATA%\Factorio (__PATH__system-write-data__ of Steam and installer games).
+        /// PARANOIDAL_LAUNCHER_TEST_APPDATA replaces it (tests of the move to 2.1 must never touch the player's folder).
+        /// </summary>
+        public static string SystemWriteData
+        {
+            get
+            {
+                var t = Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_APPDATA");
+                if (!string.IsNullOrWhiteSpace(t)) return Path.GetFullPath(t.Trim()).TrimEnd('\\');
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Factorio");
+            }
+        }
+
+        /// <summary>
+        /// config.ini for another installation of the game (the move to 2.1): every setting of `oldText` (graphics,
+        /// controls, interface) with the [path] section of `newText` (the read-data and write-data of that installation).
+        /// Without `newText` the [path] section is dropped: the game writes its own values then, by its config-path.cfg
+        /// (the comment in config-path.cfg of the game: the values are generated again when they are deleted).
+        /// </summary>
+        public static string MergeForOtherInstall(string oldText, string newText)
+        {
+            var eol = oldText.Contains("\r\n") ? "\r\n" : "\n";
+            var keep = SplitSections(oldText, eol);
+            string newPath = null;
+            if (newText != null)
+                foreach (var s in SplitSections(newText, newText.Contains("\r\n") ? "\r\n" : "\n"))
+                    if (s.Key.Equals("[path]", StringComparison.OrdinalIgnoreCase)) newPath = s.Value;
+            var sb = new StringBuilder();
+            bool done = false;
+            foreach (var s in keep)
+            {
+                if (s.Key.Equals("[path]", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (newPath != null && !done) sb.Append(newPath);
+                    done = true;
+                    continue;
+                }
+                sb.Append(s.Value);
+            }
+            if (!done && newPath != null) sb.Append(newPath);
+            return sb.ToString();
+        }
+
+        /// <summary>The text cut into sections ("" = the lines before the first header), each with its own lines and line ends.</summary>
+        static List<KeyValuePair<string, string>> SplitSections(string text, string eol)
+        {
+            var res = new List<KeyValuePair<string, string>>();
+            string head = "";
+            var cur = new StringBuilder();
+            int pos = 0;
+            while (pos < text.Length)
+            {
+                int nl = text.IndexOf('\n', pos);
+                var line = nl < 0 ? text.Substring(pos) : text.Substring(pos, nl + 1 - pos);
+                pos = nl < 0 ? text.Length : nl + 1;
+                var t = line.Trim();
+                if (t.StartsWith("[") && t.EndsWith("]"))
+                {
+                    res.Add(new KeyValuePair<string, string>(head, cur.ToString()));
+                    head = t;
+                    cur.Clear();
+                }
+                cur.Append(line);
+            }
+            res.Add(new KeyValuePair<string, string>(head, cur.ToString()));
+            // a section taken from another file must end with a line end before the next header
+            for (int i = 0; i < res.Count; i++)
+                if (res[i].Value.Length > 0 && !res[i].Value.EndsWith("\n")) res[i] = new KeyValuePair<string, string>(res[i].Key, res[i].Value + eol);
+            return res;
+        }
+
         public sealed class Result
         {
             public string ConfigPath;
@@ -58,7 +130,7 @@ namespace Paranoidal
             }
             if (string.IsNullOrEmpty(configPath))
                 configPath = useSystem == false ? "__PATH__executable__/../../config" : "__PATH__system-write-data__/config";
-            var appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Factorio");
+            var appData = SystemWriteData;
             configPath = configPath
                 .Replace("__PATH__executable__", Path.GetDirectoryName(exe))
                 .Replace("__PATH__system-write-data__", appData)
@@ -73,7 +145,7 @@ namespace Paranoidal
         /// </summary>
         public static string ResolveWriteData(string factorioDir, string exe)
         {
-            var appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Factorio");
+            var appData = SystemWriteData;
             string config = null, value = null;
             try
             {
@@ -113,7 +185,7 @@ namespace Paranoidal
                 if (factorioDir.IndexOf("\\steamapps\\", StringComparison.OrdinalIgnoreCase) >= 0) return "Steam";
                 if (Directory.GetFiles(factorioDir, "goggame-*.info").Length > 0) return "GOG";
                 var config = ResolveConfigPath(factorioDir, exe);
-                var appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Factorio");
+                var appData = SystemWriteData;
                 return config.StartsWith(appData + "\\", StringComparison.OrdinalIgnoreCase) ? "installer (data in %APPDATA%)" : "zip / portable (data in the game folder)";
             }
             catch { return "?"; }
@@ -244,7 +316,8 @@ namespace Paranoidal
 
         /// <summary>
         /// Enabled mods with a "~" dependency. Factorio 2.0.77 never reuses the data stage cache while any enabled mod
-        /// has one (it is stored in data-cache.dat as a plain required dependency, so the cache check always fails).
+        /// has one (it is stored in data-cache.dat as a plain required dependency, so the cache check always fails);
+        /// 2.1.24 too (docs/factorio-load-cache.md, 2026-11-04).
         /// </summary>
         public static List<string> TildeMods(string modsDir)
         {

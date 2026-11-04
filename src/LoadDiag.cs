@@ -9,8 +9,8 @@ using System.Text.RegularExpressions;
 namespace Paranoidal
 {
     /// <summary>
-    /// What one factorio-current/previous.log says about loading (Factorio 2.0.77 markers, measured in
-    /// docs/factorio-load-cache.md). Read only.
+    /// What one factorio-current/previous.log says about loading (markers measured on Factorio 2.0.77 and seen the same in
+    /// 2.1.24 logs, docs/factorio-load-cache.md). Read only.
     /// </summary>
     sealed class LoadLog
     {
@@ -236,8 +236,8 @@ namespace Paranoidal
                     break;
                 case LoadLog.DataState.NotUsed:
                     if (ctx.Tilde.Count > 0)
-                        v.DataCauses.Add(P("у модов " + Names(ctx.Tilde) + " в info.json зависимость с «~»: из-за ошибки Factorio 2.0 кэш данных с ними не работает никогда",
-                            "mods " + Names(ctx.Tilde) + " have a \"~\" dependency in info.json: because of a Factorio 2.0 bug the data cache never works with them"));
+                        v.DataCauses.Add(P("у модов " + Names(ctx.Tilde) + " в info.json зависимость с «~»: из-за ошибки Factorio (есть в 2.0.77 и 2.1.24) кэш данных с ними не работает никогда",
+                            "mods " + Names(ctx.Tilde) + " have a \"~\" dependency in info.json: because of a Factorio bug (in 2.0.77 and 2.1.24) the data cache never works with them"));
                     if (prev == null)
                     {
                         v.DataCauses.Add(P("предыдущего лога игры нет: первый запуск с этой папкой данных, или кэш ещё не построен",

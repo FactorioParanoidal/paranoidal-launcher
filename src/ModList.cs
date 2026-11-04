@@ -2,24 +2,25 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Web.Script.Serialization;
 
 namespace Paranoidal
 {
     /// <summary>
-    /// mods\mod-list.json: the build is played with the Quality and Elevated Rails DLC switched on and Space Age switched
-    /// off (decision of the modpack team). A player with another DLC state gets a mod mismatch with the host.
+    /// mods\mod-list.json: the build is played with the Quality and Elevated Rails DLC switched on (2.1: and Recycler,
+    /// Quality 2.1 depends on it) and Space Age switched off (decision of the modpack team). A player with another DLC
+    /// state gets a mod mismatch with the host.
     /// </summary>
     static class ModList
     {
-        /// <summary>DLC mod -> the state the build needs. Other entries of mod-list.json are never touched.</summary>
-        static readonly KeyValuePair<string, bool>[] Dlc =
-        {
-            new KeyValuePair<string, bool>("space-age", false),
-            new KeyValuePair<string, bool>("quality", true),
-            new KeyValuePair<string, bool>("elevated-rails", true),
-        };
+        /// <summary>DLC mod -> the state the build needs (BuildLine.DlcStates). Other entries of mod-list.json are never touched.</summary>
+        static KeyValuePair<string, bool>[] Dlc => Lines.Current.DlcStates;
+
+        /// <summary>"quality, elevated-rails включены, space-age выключен" for the journal.</summary>
+        static string StatesRu() =>
+            string.Join(", ", Dlc.Where(d => d.Value).Select(d => d.Key)) + " включены, " + string.Join(", ", Dlc.Where(d => !d.Value).Select(d => d.Key)) + " выключен";
 
         /// <summary>Creates mod-list.json if missing; otherwise only sets the enabled flag of the DLC entries.</summary>
         public static void EnsureDlc(string modsDir, Action<string, LogKind> log)
@@ -77,11 +78,9 @@ namespace Paranoidal
             }
 
             mods = new List<Dictionary<string, object>> { Entry("base", true) };
-            foreach (var name in new[] { "elevated-rails", "quality", "space-age" })
-                foreach (var want in Dlc)
-                    if (want.Key == name) mods.Add(Entry(want.Key, want.Value));
+            foreach (var want in Dlc.OrderBy(d => d.Key, StringComparer.Ordinal)) mods.Add(Entry(want.Key, want.Value));
             Write(path, mods, ser);
-            log("Создан mod-list.json: quality и elevated-rails включены, space-age выключен.", LogKind.Ok);
+            log("Создан mod-list.json: " + StatesRu() + ".", LogKind.Ok);
         }
 
         static Dictionary<string, object> Entry(string name, bool enabled) =>

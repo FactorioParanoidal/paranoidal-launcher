@@ -8,9 +8,11 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
 ## 1. What it is
 
 - One Windows exe for players of the Factorio modpack **Paranoidal** (repository
-  `FactorioParanoidal/ParanoidalModpack`, branch `pre_release_2.0`; `AppInfo.Owner/RepoName/Branch`).
-- It installs and updates the game's `mods\` from that branch, checks the game (Factorio **2.0.77** with the Space
-  Age expansion files; `AppInfo.RequiredFactorio`) and starts it with `--mod-directory`.
+  `FactorioParanoidal/ParanoidalModpack`; `AppInfo.Owner/RepoName`). Since 1.3.0 it serves one of two **build lines**
+  (`src/Lines.cs`, `settings.ini` `line=`): Paranoidal 2.1 (branch `pre_release_2.1`, Factorio 2.1.x not older than
+  the `base >= …` of zzzparanoidal, DLC incl. recycler) and Paranoidal 2.0 (branch `pre_release_2.0`, exactly 2.0.77).
+- It installs and updates the game's `mods\` from the branch of its line, checks the game and starts it with
+  `--mod-directory`; a player of the 2.0 line moves to 2.1 with «Paranoidal 2.1» (`src/Migration.cs`).
 - Players have no git, no tokens and no technical skills. "Put the exe next to the game and press one button" is
   the whole user story; every feature must keep it that way.
 - Stack: C# for .NET Framework 4.8 WinForms (present in every Windows 10/11, nothing to install), compiled by Roslyn
@@ -21,18 +23,20 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
 
 | Path | Role |
 |---|---|
-| `src/AppInfo.cs` | version (single source), repo/branch, required game, data folder, `Settings` (`settings.ini`), `MaskUser` |
+| `src/AppInfo.cs` | version (single source), repo, Discord link, data folder, `Settings` (`settings.ini`), `MaskUser` |
+| `src/Lines.cs` | build lines 2.0/2.1: branch, required game (`MinGame`, `Fits`), DLC and their `mod-list.json` states; `Lines.Current` |
+| `src/Migration.cs` | the move to 2.1: plan, steps with a plan file (continues after an interruption), config merge, cross-disk copy |
 | `src/Program.cs` | entry point, assembly attributes from `AppInfo` |
 | `src/MainForm.cs` | the window: cards (build, Factorio, mods folder), buttons, tabs «Что нового» / «Изменённые моды» / «Журнал» |
 | `src/Ui.cs`, `src/Dialogs.cs` | dark Factorio-like theme, buttons, cards; report and host-version dialogs |
 | `src/Tr.cs` | RU/EN: `Tr.T("русский", "English")` at the place of use |
 | `src/Sync.cs` | `SyncEngine`: status, update, «Проверить файлы», parallel blob download, extra mods, start preparation |
 | `src/Git.cs` | runs the bundled git with an isolated environment, kill handle for the download watchdog |
-| `src/GitHubApi.cs` | anonymous read-only REST: change list, file sizes for batching, short commit id → full; offline cache |
+| `src/GitHubApi.cs` | anonymous read-only REST: change list, file sizes for batching, short commit id → full; offline cache; `RemoteBuild` (zzzparanoidal of a branch/commit from raw.githubusercontent.com) |
 | `src/Recognize.cs` | recognising a build already in `mods\` by content (no network needed) |
 | `src/Rollback.cs` | one step back/forward without internet (difference only) |
 | `src/VersionLine.cs` | «Скопировать версию» line, parsing the host's line, `mod-settings.dat` reader/fingerprint |
-| `src/Factorio.cs` | finding installations, game version and DLC check |
+| `src/Factorio.cs` | finding installations, game version and DLC check per line, where to get 2.1 |
 | `src/ModList.cs` | DLC entries of `mod-list.json` |
 | `src/GameConfig.cs` | load cache keys in the `config.ini` the game reads; warning about `~` dependencies |
 | `src/LoadDiag.cs` | load diagnostics from `factorio-current/previous.log` |
@@ -83,8 +87,9 @@ Each one was chosen after a real problem; the reasons are what you need when a "
 4. **The launcher never writes into a mod** and the modpack is not changed for the launcher (recognition works by
    content fingerprint, not by a marker file in `zzzparanoidal`).
 5. **Player files are not touched**: saves, `mod-settings.dat`, `player-data.json`, zip mods, mods the player chose to
-   keep. Only the DLC entries of `mod-list.json` are set (quality and elevated-rails on, space-age off: the modpack
-   is played without Space Age content) and only the three cache keys of the game `config.ini` (with one backup).
+   keep. Only the DLC entries of `mod-list.json` are set (quality and elevated-rails on, 2.1 also recycler, space-age
+   off: the modpack is played without Space Age content) and only the three cache keys of the game `config.ini` (with
+   one backup). The one exception is the move to 2.1 the player confirms (item 16): it moves them, never overwrites.
 6. **One question, no jargon.** No branch names or git words in the window; an update asks once and shows what changes.
 7. **Journal, `sync-log.txt`, `crash.txt` and the report stay Russian** in both interface languages: the team reads
    them. Default interface language: Russian for the 15 post-Soviet countries (UI language or region), else English.
@@ -108,7 +113,21 @@ Each one was chosen after a real problem; the reasons are what you need when a "
     opens only the local copy; a guide update is offered with the build update, and logged as a highlighted line.
 15. **The modpack's load cache.** The launcher turns the game's cache on before every start; any change of
     `mod-settings.dat` (also per-user settings changed in game) and any enabled mod with a `~` dependency make
-    Factorio 2.0.77 rebuild the data stage. Facts and log markers: `docs/factorio-load-cache.md`.
+    Factorio 2.0.77 rebuild the data stage (the `~` bug is in 2.1.24 too). Facts and log markers: `docs/factorio-load-cache.md`.
+16. **Two build lines, the move to 2.1** (owner's decisions, 2026-11-04; README «Линии сборки»): one exe serves both lines
+    (one `releases/latest` for everybody); new players get 2.1 as if there were no 2.0; the 2.0 line is kept for
+    players with a 2.0 build in `mods` until the team decides to remove everything about 2.0. 2.1 needs the game
+    version of the build or newer within 2.1 ("не ниже"), 2.0 stays exactly 2.0.77. The button appears with the release
+    (no flag). The move **moves** (not copies) saves, settings, the build and the launcher; the player's own mods go as
+    they are and are asked about at the update; everything the launcher brought is removed from the 2.0 folder (the
+    window says so); «Оставить» answers, the 2.0 rollback and the pin are reset; no backup of saves. Nothing in the
+    2.1 folder is overwritten (`*.before-paranoidal`, « (2.0)» for saves).
+17. **Questions only about the player's files** (owner, 2026-11-04): folders the build itself removed or renamed are
+    removed by the update without a question (and kept for the rollback: do not delete them before
+    `SaveForRollback`); folders of any known build version and earlier «Оставить» answers about them go without a
+    question; «Лишние моды» lists only what never was in the build.
+18. **A second start shows the running launcher** (owner, 2026-11-04): the message «уже запущен» stays, the window of
+    the first one is restored and brought to the front (registered window message, also through UIPI).
 
 ## 5. Testing
 
@@ -118,6 +137,11 @@ Each one was chosen after a real problem; the reasons are what you need when a "
   `git archive <commit> mods | tar -x` from a clone of the modpack.
 - `obj/Harness.exe --loaddiag-selftest tools/testdata/load-logs-2.0.77.zip` must print `SELFTEST OK` after any change
   of `LoadDiag.cs`/`GameConfig.cs`.
+- The move to 2.1: `Harness --migrate` on fake game folders (`bin\x64\factorio.exe` stub, `data\<mod>\info.json` with
+  the version, `config-path.cfg`), with `PARANOIDAL_LAUNCHER_TEST_APPDATA` and `PARANOIDAL_LAUNCHER_TEST_SHORTCUTS`
+  (the harness refuses without them), interruptions with `PARANOIDAL_LAUNCHER_TEST_MIGRATE_STOP`; end to end with
+  `TEST_AUTO` + `PARANOIDAL_LAUNCHER_TEST_MIGRATE` + `PARANOIDAL_LAUNCHER_NO_RELOCATE=1`. Stands and scripts of the
+  1.3.0 tests: `test-runs/launcher130-20261104/` of the workspace.
 - Releases, self-update and relocation: a local fake GitHub (`python -m http.server` over
   `FactorioParanoidal/<repo>/releases/latest/download/release.json` + `releases/download/vX.Y.Z/<file>`, the manifest
   from `tools/release-manifest.ps1`, a second launcher built from a copy of the sources with a higher version) and
@@ -125,8 +149,10 @@ Each one was chosen after a real problem; the reasons are what you need when a "
   `--swap`, `--relocate`, `--cleanup-old`, `--shortcuts`); restarts end to end with `PARANOIDAL_LAUNCHER_TEST_AUTO`
   (off-screen, no activation, journal to a file) and `PARANOIDAL_LAUNCHER_TEST_SHORTCUTS`, in a fake game folder
   under `test-runs/` with its own `settings.ini`. Never let a test launcher see the real installations without
-  `settings.ini` pointing at the fake game: relocation would move it into the player's game folder. The UAC path cannot
-  be automated: say so in the handoff.
+  `settings.ini` pointing at the fake game: relocation would move it into the player's game folder, and with a `mods`
+  folder there the status check would create `.paranoidal-git` in it. This holds for every test that starts the exe,
+  also a short single-instance one (1.3.0 tests: one such start read the real 2.1.24 install, nothing was written
+  because it has no `mods`). The UAC path cannot be automated: say so in the handoff.
 - Dialogs: `tools/build-uishot.ps1` renders them to PNG without showing them. Do not click the window with posted
   messages and never take the focus from a running game.
 - **Never** use the player's real game folder, `%APPDATA%\Factorio`, saves, `mod-list.json` or `mod-settings.dat` for
@@ -135,7 +161,7 @@ Each one was chosen after a real problem; the reasons are what you need when a "
 - What only a person can accept: real clicks and dialogs, the diagnostics line after a real game exit, Steam installs,
   copying between two computers, default language on a non-Russian Windows. Say so in the handoff; do not claim them.
 - When the game version changes: re-measure the cache markers (`docs/factorio-load-cache.md`), update
-  `AppInfo.RequiredFactorio` and the reference logs.
+  `BuildLine.DefaultMin` in `src/Lines.cs` (the 2.1 line also follows `base >= …` of zzzparanoidal) and the reference logs.
 
 ## 6. Ideas not done yet
 
@@ -150,8 +176,9 @@ Proposed by agents and discussed with the team; none is approved as a plan. Ask 
   settings) with suggested `video-memory-usage`/graphics settings.
 - **Cache warm-up** after an update (`--create` into a temp file builds the data cache without a window); measure first.
 - **Startup settings that differ from the build defaults**, with a reset (players change them and cannot join the host).
-- After-start behaviour (tray / close / nothing), links to the modpack FAQ and Discord, starting Steam installs through
-  Steam (`-applaunch 427520`) if direct start proves unreliable there.
+- After-start behaviour (tray / close / nothing), a link to the modpack FAQ (Discord is a button since 1.3.0), starting
+  Steam installs through Steam (`-applaunch 427520`) if direct start proves unreliable there.
+- The owner declined a backup of saves for the move to 2.1 (2026-11-04); the idea above is about build updates only.
 
 ## 7. Working rules
 

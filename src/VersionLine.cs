@@ -26,10 +26,12 @@ namespace Paranoidal
         {
             Func<string, string, string> t = (ru, eng) => en ? eng : ru;
             var sb = new StringBuilder();
+            // the line comes first: ParseHostLine (and the host of another line) reads it
+            var line = Lines.Current.Name + ", ";
             if (installed != null)
-                sb.Append(t("Paranoidal, сборка от ", "Paranoidal, build of ")).Append(installedDate ?? "?").Append(" (").Append(AppInfo.Short(installed)).Append(')');
+                sb.Append(line).Append(t("сборка от ", "build of ")).Append(installedDate ?? "?").Append(" (").Append(AppInfo.Short(installed)).Append(')');
             else
-                sb.Append(t("Paranoidal, сборка не опознана (отпечаток файлов ", "Paranoidal, build not recognised (file fingerprint ")).Append(fingerprint ?? "?").Append(')');
+                sb.Append(line).Append(t("сборка не опознана (отпечаток файлов ", "build not recognised (file fingerprint ")).Append(fingerprint ?? "?").Append(')');
             if (modified > 0) sb.Append(t(" · изменено файлов сборки: ", " · build files changed: ")).Append(modified);
 
             string settings;
@@ -57,6 +59,18 @@ namespace Paranoidal
             if (m.Success) return m.Groups[1].Value;
             m = Regex.Match(text.Trim(), @"^([0-9a-f]{7,40})$");
             return m.Success ? m.Groups[1].Value : null;
+        }
+
+        /// <summary>
+        /// The build line of a host's version line: "Paranoidal 2.1, …" (1.3.0+); "Paranoidal, …" of launchers 1.0.1–1.2.0 is the
+        /// 2.0 line; null when the text does not say (a bare commit id).
+        /// </summary>
+        public static BuildLine ParseHostLine(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            var m = Regex.Match(text, @"Paranoidal (\d+\.\d+), ");
+            if (m.Success) return Lines.ById(m.Groups[1].Value);
+            return Regex.IsMatch(text, @"Paranoidal, (сборка|build) ") ? Lines.L20 : null;
         }
 
         /// <summary>"name version" of the foreign entries with their state in mod-list.json, for the report.</summary>
